@@ -1,14 +1,15 @@
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
+    AnyElement, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable as _, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ObjectFit,
-    ParentElement, Styled, StyledImage as _, Subscription, Window,
+    ParentElement, PathBuilder, Pixels, Styled, StyledImage as _, Subscription, Window,
     assets::IconName,
     base::input::{InputEvent, Textarea as BaseTextarea, TextareaState},
+    canvas,
     component::{
         ActiveTheme as _, Icon, Sizable as _, Size, v_flex,
         menu::ContextMenuExt,
     },
-    div, img,
+    div, img, point,
     prelude::FluentBuilder as _,
     px, relative, rgb,
 };
@@ -19,10 +20,65 @@ use crate::{
         canvas_view::CanvasView,
         context_menu::build_item_popup_menu,
         geometry::TEXT_BOX_PAD_PX,
-        model::{CanvasDrag, CanvasItem, LayoutMode, ShapeKind, TextAlignMode},
+        model::{CanvasDrag, CanvasItem, FreeformShapeKind, LayoutMode, ShapeKind, TextAlignMode},
     },
     shared::i18n::Language,
 };
+
+fn paint_freeform_polygon(
+    kind: FreeformShapeKind,
+    fill_color: Hsla,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
+    let w = f32::from(bounds.size.width);
+    let h = f32::from(bounds.size.height);
+    let ox = f32::from(bounds.origin.x);
+    let oy = f32::from(bounds.origin.y);
+    let mut builder = PathBuilder::fill();
+    match kind {
+        FreeformShapeKind::Triangle => {
+            builder.move_to(point(px(ox + w * 0.5), px(oy)));
+            builder.line_to(point(px(ox + w), px(oy + h)));
+            builder.line_to(point(px(ox), px(oy + h)));
+            builder.close();
+        }
+        FreeformShapeKind::Diamond => {
+            builder.move_to(point(px(ox + w * 0.5), px(oy)));
+            builder.line_to(point(px(ox + w), px(oy + h * 0.5)));
+            builder.line_to(point(px(ox + w * 0.5), px(oy + h)));
+            builder.line_to(point(px(ox), px(oy + h * 0.5)));
+            builder.close();
+        }
+        FreeformShapeKind::Star => {
+            let cx = ox + w * 0.5;
+            let cy = oy + h * 0.5;
+            let rx_out = w * 0.5;
+            let ry_out = h * 0.5;
+            let rx_in = rx_out * 0.382;
+            let ry_in = ry_out * 0.382;
+            for i in 0..10 {
+                let angle = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::PI / 5.0;
+                let (rx, ry) = if i % 2 == 0 {
+                    (rx_out, ry_out)
+                } else {
+                    (rx_in, ry_in)
+                };
+                let pt = point(px(cx + rx * angle.cos()), px(cy + ry * angle.sin()));
+                if i == 0 {
+                    builder.move_to(pt);
+                } else {
+                    builder.line_to(pt);
+                }
+            }
+            builder.close();
+        }
+        FreeformShapeKind::Rectangle | FreeformShapeKind::Circle => return,
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, fill_color);
+    }
+}
 
 struct InlineTextState {
     textarea: Entity<TextareaState>,
@@ -55,9 +111,10 @@ pub(crate) fn render_canvas_item(
     let y = orig_y * display_scale;
     let is_freeform = mode == LayoutMode::Freeform;
     let is_text = is_freeform && item.is_text();
+    let is_shape = is_freeform && item.is_shape();
     let is_editing_inline = is_text && editing_text_id == Some(id);
     let has_image = item.image.is_some();
-    let min_disp = if is_freeform && (has_image || is_text) {
+    let min_disp = if is_freeform && (has_image || is_text || is_shape) {
         4.0
     } else {
         18.0
@@ -74,8 +131,35 @@ pub(crate) fn render_canvas_item(
     };
 
     let inner_frame = if is_freeform {
-        // Freeform mode: render photo naturally or as a text box
-        if let Some(tb) = &item.text {
+        // Freeform mode: render photo naturally, text box, or vector shape
+        if let Some(sb) = &item.shape {
+            let kind = sb.kind;
+            let fill_color = sb.fill_color;
+            match kind {
+                FreeformShapeKind::Rectangle => div()
+                    .size_full()
+                    .bg(fill_color)
+                    .when(item.corner_radius > 0.0, |d| {
+                        d.rounded(px(item.corner_radius * display_scale))
+                    })
+                    .into_any_element(),
+                FreeformShapeKind::Circle => div()
+                    .size_full()
+                    .bg(fill_color)
+                    .rounded(px(w.max(h)))
+                    .into_any_element(),
+                FreeformShapeKind::Triangle
+                | FreeformShapeKind::Diamond
+                | FreeformShapeKind::Star => canvas(
+                    |_, _, _| {},
+                    move |bounds, (), window, _| {
+                        paint_freeform_polygon(kind, fill_color, bounds, window);
+                    },
+                )
+                .size_full()
+                .into_any_element(),
+            }
+        } else if let Some(tb) = &item.text {
             let font_px = (tb.font_size_pt.clamp(6.0, 300.0) * (paper_dpi.max(72) as f32 / 72.0)
                 * display_scale)
                 .max(4.0);
@@ -333,7 +417,7 @@ pub(crate) fn render_canvas_item(
                                 app.state.editing_text_id = Some(id);
                                 cx.notify();
                             });
-                        } else {
+                        } else if !is_shape {
                             app.update(cx, |app, cx| {
                                 app.prompt_single_image_for_item(id, cx);
                                 cx.notify();
@@ -371,7 +455,7 @@ pub(crate) fn render_canvas_item(
                 menu,
                 id,
                 mode,
-                is_text,
+                is_text || is_shape,
                 has_image,
                 has_edit,
                 lang,

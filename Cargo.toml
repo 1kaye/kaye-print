@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 cosmic-text = "0.19"
-gpui-kit = { version = "0.9.1", features = ["gpui-fast"] }
+gpui-kit = { version = "0.10.0", features = ["gpui-fast"] }
 image = "0.25"
 rfd = "0.15"
 rust-i18n = "4.2"

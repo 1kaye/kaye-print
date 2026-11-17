@@ -15,7 +15,7 @@ use image::{
     RgbaImage, metadata::Orientation,
 };
 
-use crate::canvas::model::{FitMode, ImageTransform, TextAlignMode};
+use crate::canvas::model::{FitMode, FreeformShapeKind, ImageTransform, TextAlignMode};
 
 /// Converts a `DynamicImage` into GPUI's `Arc<RenderImage>` (BGRA pixel format).
 pub fn dynamic_to_render_image(img: &DynamicImage) -> Arc<RenderImage> {
@@ -636,7 +636,118 @@ pub fn measure_text_box_size_px(
     }
 }
 
-/// Rasterizes wrapped UTF-8 text into `sheet` inside `(frame_x, frame_y, frame_w, frame_h)`
+fn freeform_shape_polygon(kind: FreeformShapeKind, w: f32, h: f32) -> Vec<(f32, f32)> {
+    match kind {
+        FreeformShapeKind::Triangle => vec![(w * 0.5, 0.0), (w, h), (0.0, h)],
+        FreeformShapeKind::Diamond => vec![(w * 0.5, 0.0), (w, h * 0.5), (w * 0.5, h), (0.0, h * 0.5)],
+        FreeformShapeKind::Star => {
+            let cx = w * 0.5;
+            let cy = h * 0.5;
+            let rx_out = w * 0.5;
+            let ry_out = h * 0.5;
+            let rx_in = rx_out * 0.382;
+            let ry_in = ry_out * 0.382;
+            (0..10)
+                .map(|i| {
+                    let angle = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::PI / 5.0;
+                    let (rx, ry) = if i % 2 == 0 {
+                        (rx_out, ry_out)
+                    } else {
+                        (rx_in, ry_in)
+                    };
+                    (cx + rx * angle.cos(), cy + ry * angle.sin())
+                })
+                .collect()
+        }
+        FreeformShapeKind::Rectangle | FreeformShapeKind::Circle => Vec::new(),
+    }
+}
+
+fn point_in_polygon(px: f32, py: f32, verts: &[(f32, f32)]) -> bool {
+    let mut inside = false;
+    let n = verts.len();
+    let mut j = n.saturating_sub(1);
+    for i in 0..n {
+        let (xi, yi) = verts[i];
+        let (xj, yj) = verts[j];
+        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Rasterizes a Freeform vector shape onto `sheet` inside `(frame_x, frame_y, frame_w, frame_h)`.
+pub fn composite_shape_onto_sheet(
+    sheet: &mut RgbaImage,
+    kind: FreeformShapeKind,
+    fill_rgba: [u8; 4],
+    frame_x: i32,
+    frame_y: i32,
+    frame_w: u32,
+    frame_h: u32,
+    corner_radius: f32,
+) {
+    if frame_w == 0 || frame_h == 0 || fill_rgba[3] == 0 {
+        return;
+    }
+    let fw = frame_w as f32;
+    let fh = frame_h as f32;
+    let x0 = frame_x.max(0);
+    let y0 = frame_y.max(0);
+    let x1 = (frame_x + frame_w as i32).min(sheet.width() as i32);
+    let y1 = (frame_y + frame_h as i32).min(sheet.height() as i32);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    let poly = freeform_shape_polygon(kind, fw, fh);
+    let r = corner_radius.min(fw * 0.5).min(fh * 0.5).max(0.0);
+    let src_a = fill_rgba[3] as u32;
+    let inv_a = 255 - src_a;
+
+    for py in y0..y1 {
+        let ly = (py - frame_y) as f32 + 0.5;
+        for px in x0..x1 {
+            let lx = (px - frame_x) as f32 + 0.5;
+            let inside = match kind {
+                FreeformShapeKind::Rectangle => {
+                    if r <= 0.5 {
+                        true
+                    } else {
+                        let in_l = lx < r;
+                        let in_r = lx > fw - r;
+                        let in_t = ly < r;
+                        let in_b = ly > fh - r;
+                        if (in_l || in_r) && (in_t || in_b) {
+                            let cx = if in_l { r } else { fw - r };
+                            let cy = if in_t { r } else { fh - r };
+                            (lx - cx).hypot(ly - cy) <= r
+                        } else {
+                            true
+                        }
+                    }
+                }
+                FreeformShapeKind::Circle => {
+                    let dx = (lx - fw * 0.5) / (fw * 0.5);
+                    let dy = (ly - fh * 0.5) / (fh * 0.5);
+                    dx * dx + dy * dy <= 1.0
+                }
+                FreeformShapeKind::Triangle
+                | FreeformShapeKind::Diamond
+                | FreeformShapeKind::Star => point_in_polygon(lx, ly, &poly),
+            };
+            if inside {
+                let dst = sheet.get_pixel_mut(px as u32, py as u32);
+                dst.0[0] = ((fill_rgba[0] as u32 * src_a + dst.0[0] as u32 * inv_a) / 255) as u8;
+                dst.0[1] = ((fill_rgba[1] as u32 * src_a + dst.0[1] as u32 * inv_a) / 255) as u8;
+                dst.0[2] = ((fill_rgba[2] as u32 * src_a + dst.0[2] as u32 * inv_a) / 255) as u8;
+                dst.0[3] = 255;
+            }
+        }
+    }
+}
 /// at the sheet DPI so printed/PDF output matches the live Freeform canvas.
 pub fn composite_text_onto_sheet(
     sheet: &mut RgbaImage,

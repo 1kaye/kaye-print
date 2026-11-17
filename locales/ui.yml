@@ -164,6 +164,33 @@ app:
   add_text:
     id: Tambah Teks
     en: Add Text
+  photos:
+    id: Foto
+    en: Photos
+  text:
+    id: Teks
+    en: Text
+  shape:
+    id: Bentuk
+    en: Shape
+  shape_circle:
+    id: Lingkaran
+    en: Circle
+  shape_triangle:
+    id: Segitiga
+    en: Triangle
+  shape_diamond:
+    id: Belah Ketupat
+    en: Diamond
+  shape_star:
+    id: Bintang
+    en: Star
+  selected_shape:
+    id: Bentuk Terpilih
+    en: Selected Shape
+  fill_color:
+    id: Warna Isi
+    en: Fill Color
   layers_title:
     id: "Lapisan (Layer)"
     en: Layers
@@ -459,3 +486,6 @@ app:
   added_freeform_text:
     id: "+1 kotak teks ditambahkan"
     en: "+1 text box added"
+  added_freeform_shape:
+    id: "+1 bentuk ditambahkan"
+    en: "+1 shape added"

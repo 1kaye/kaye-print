@@ -9,6 +9,7 @@ use gpui_kit::{
         h_flex,
         input::{InputEvent, Textarea, TextareaState},
         label::Label,
+        popover::Popover,
         select::{SearchableVec, Select, SelectEvent, SelectState},
         v_flex,
     },
@@ -19,9 +20,8 @@ use gpui_kit::{
 use super::{
     common::{ButtonSelectedExt as _, render_color_select, render_number_field, render_rounded_slider},
     inspector_view::InspectorView,
-    layer_list::render_layer_list,
 };
-use crate::canvas::model::TextAlignMode;
+use crate::canvas::model::{FreeformShapeKind, TextAlignMode};
 
 struct TextEditorFieldState {
     textarea: Entity<TextareaState>,
@@ -100,25 +100,28 @@ fn render_font_family_select(
         }
         names.into_iter().map(SharedString::from).collect::<Vec<_>>()
     });
-    let font_list = fonts_entity.read(cx).clone();
     let active_family = if current_family.is_empty() {
         cx.theme().font_family.to_string()
     } else {
         current_family
     };
-    let active_ix = font_list
-        .iter()
-        .position(|f| f.as_ref() == active_family.as_str())
-        .or_else(|| {
-            font_list
-                .iter()
-                .position(|f| f.eq_ignore_ascii_case(&active_family))
-        })
-        .unwrap_or(0);
+    let active_ix = {
+        let font_list = fonts_entity.read(cx);
+        font_list
+            .iter()
+            .position(|f| f.as_ref() == active_family.as_str())
+            .or_else(|| {
+                font_list
+                    .iter()
+                    .position(|f| f.eq_ignore_ascii_case(&active_family))
+            })
+            .unwrap_or(0)
+    };
 
     let app_for_font = app.clone();
+    let fonts_for_init = fonts_entity.clone();
     let select_state = window.use_keyed_state(("freeform-font-select", item_id), cx, |window, cx| {
-        let items = SearchableVec::new(font_list.clone());
+        let items = SearchableVec::new(fonts_for_init.read(cx).clone());
         let select = cx.new(|cx| {
             SelectState::new(items, Some(IndexPath::new(active_ix)), window, cx).searchable(true)
         });
@@ -172,47 +175,165 @@ pub fn render_freeform_panel(
     v_flex()
         .gap(px(12.0))
         .w_full()
-        // 1. Card Susun Bebas
+        // 1. Freeform Layout card
         .child(
             GroupBox::new().outline().title(lang.tr("app.freeform_layout")).child(
-                h_flex()
-                    .gap_2()
+                v_flex()
+                    .gap(px(6.0))
                     .w_full()
                     .child(
-                        Button::new("btn-freeform-add-multi")
-                            .secondary()
-                            .flex_1()
-                            .icon(IconName::Plus)
-                            .label(lang.tr("app.add_photos"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.app.update(cx, |app, cx| {
-                                    app.prompt_multi_images_freeform(cx);
-                                });
-                            })),
+                        Label::new(lang.tr("app.add"))
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
                     )
                     .child(
-                        Button::new("btn-freeform-add-text")
-                            .secondary()
-                            .flex_1()
-                            .icon(IconName::Plus)
-                            .label(lang.tr("app.add_text"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let family = default_font_family.clone();
-                                this.app.update(cx, |app, cx| {
-                                    app.state.add_freeform_text_box(family);
-                                    app.canvas_focus.focus(window, cx);
-                                    cx.notify();
-                                });
-                            })),
+                        h_flex()
+                            .gap_2()
+                            .w_full()
+                            .child(
+                                Button::new("btn-freeform-add-multi")
+                                    .secondary()
+                                    .flex_1()
+                                    .icon(IconName::Image)
+                                    .label(lang.tr("app.photos"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.app.update(cx, |app, cx| {
+                                            app.prompt_multi_images_freeform(cx);
+                                        });
+                                    })),
+                            )
+                            .child(
+                                Button::new("btn-freeform-add-text")
+                                    .secondary()
+                                    .flex_1()
+                                    .icon(IconName::FileText)
+                                    .label(lang.tr("app.text"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let family = default_font_family.clone();
+                                        this.app.update(cx, |app, cx| {
+                                            app.state.add_freeform_text_box(family);
+                                            app.canvas_focus.focus(window, cx);
+                                            cx.notify();
+                                        });
+                                    })),
+                            ),
+                    )
+                    .child(
+                        Popover::new("freeform-shape-popover")
+                            .trigger(
+                                Button::new("btn-freeform-add-shape")
+                                    .secondary()
+                                    .w_full()
+                                    .icon(IconName::Frame)
+                                    .label(lang.tr("app.shape")),
+                            )
+                            .child({
+                                let app_for_shapes = sidebar.app.clone();
+                                v_flex()
+                                    .gap_1()
+                                    .w(px(148.0))
+                                    .children(FreeformShapeKind::ALL.iter().copied().map(|kind| {
+                                        let app_btn = app_for_shapes.clone();
+                                        let icon = match kind {
+                                            FreeformShapeKind::Rectangle => IconName::Square,
+                                            FreeformShapeKind::Circle => IconName::Circle,
+                                            FreeformShapeKind::Triangle => IconName::Triangle,
+                                            FreeformShapeKind::Diamond => IconName::Diamond,
+                                            FreeformShapeKind::Star => IconName::Star,
+                                        };
+                                        Button::new(("add-shape-kind", kind as usize))
+                                            .ghost()
+                                            .w_full()
+                                            .child(
+                                                h_flex()
+                                                    .w_full()
+                                                    .items_center()
+                                                    .justify_start()
+                                                    .gap_2()
+                                                    .child(Icon::new(icon).small())
+                                                    .child(kind.label_for(lang)),
+                                            )
+                                            .on_click(move |_, window, cx| {
+                                                app_btn.update(cx, |app, cx| {
+                                                    app.state.add_freeform_shape(kind);
+                                                    app.canvas_focus.focus(window, cx);
+                                                    cx.notify();
+                                                });
+                                            })
+                                    }))
+                            }),
                     ),
             ),
         )
-        // 2. Layers card - loaded from layer_list.rs
-        .child(render_layer_list(sidebar, window, cx))
+        // 2. Layers card - isolated Entity<LayerListView> so spring animation only redraws layers
+        .child(sidebar.layer_list.clone())
         // 3. Selected item card: show "Selected Text" for text boxes, or "Selected Image" for photos
         .when_some(selected, |col, item| {
             let id = item.id;
-            if let Some(tb) = item.text {
+            if let Some(sb) = item.shape {
+                col.child(
+                    GroupBox::new().outline().title(lang.tr("app.selected_shape")).child(
+                        v_flex()
+                            .gap(px(10.0))
+                            .w_full()
+                            .child(
+                                v_flex()
+                                    .gap(px(4.0))
+                                    .w_full()
+                                    .child(
+                                        Label::new(lang.tr("app.fill_color"))
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .child(render_color_select(
+                                        ("freeform-shape-color", id),
+                                        Some(sb.fill_color),
+                                        sb.fill_color,
+                                        &sidebar.app,
+                                        window,
+                                        cx,
+                                        move |color, app, cx| {
+                                            if let Some(col) = color
+                                                && let Some(it) = app.state.find_item_mut(id)
+                                                && let Some(shape) = &mut it.shape
+                                            {
+                                                shape.fill_color = col;
+                                                cx.notify();
+                                            }
+                                        },
+                                    )),
+                            )
+                            .when(sb.kind == FreeformShapeKind::Rectangle, |v| {
+                                v.child(
+                                    v_flex()
+                                        .gap(px(4.0))
+                                        .child(
+                                            h_flex()
+                                                .justify_between()
+                                                .items_center()
+                                                .child(
+                                                    Label::new(lang.tr("app.corner_radius"))
+                                                        .text_sm()
+                                                        .text_color(cx.theme().muted_foreground),
+                                                )
+                                                .child(
+                                                    Label::new(format!("{:.0} px", item.corner_radius))
+                                                        .text_sm()
+                                                        .text_color(cx.theme().muted_foreground),
+                                                ),
+                                        )
+                                        .child(render_rounded_slider(
+                                            id,
+                                            item.corner_radius,
+                                            &sidebar.app,
+                                            window,
+                                            cx,
+                                        )),
+                                )
+                            }),
+                    ),
+                )
+            } else if let Some(tb) = item.text {
                 col.child(
                     GroupBox::new().outline().title(lang.tr("app.selected_text")).child(
                         v_flex()

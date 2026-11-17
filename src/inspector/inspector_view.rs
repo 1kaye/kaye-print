@@ -1,13 +1,12 @@
 use gpui_kit::{
-    AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
-    ParentElement, Render, Styled, Subscription, Window,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement,
+    Render, Styled, Subscription, Window,
     assets::IconName,
     component::{
         ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, Size, WindowExt as _,
         button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _},
         dialog::DialogEntrance,
         h_flex, Icon,
-        input::{InputEvent, InputState},
         scroll::ScrollableElement as _,
         v_flex,
     },
@@ -20,19 +19,20 @@ use crate::{
     inspector::{
         freeform_controls::render_freeform_panel,
         id_photo_controls::render_id_photo_panel,
+        layer_list::LayerListView,
         paper_controls::render_paper_settings_panel,
     },
 };
 
 pub struct InspectorView {
     pub app: Entity<StudioApp>,
-    pub rename_session: Option<(u64, Entity<InputState>, Subscription)>,
-    pub drag_hover: Option<(u64, usize)>,
+    pub layer_list: Entity<LayerListView>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl InspectorView {
     pub fn new(app: Entity<StudioApp>, cx: &mut Context<Self>) -> Self {
+        let layer_list = cx.new(|cx| LayerListView::new(app.clone(), cx));
         let _subscriptions = vec![
             cx.observe(&app, |_, _, cx| {
                 cx.notify();
@@ -41,80 +41,9 @@ impl InspectorView {
 
         Self {
             app,
-            rename_session: None,
-            drag_hover: None,
+            layer_list,
             _subscriptions,
         }
-    }
-
-    pub fn start_layer_rename(
-        &mut self,
-        id: u64,
-        current_name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let input = cx.new(|cx| InputState::new(window, cx).default_value(current_name));
-        let app_for_sub = self.app.clone();
-        let sub = cx.subscribe_in(
-            &input,
-            window,
-            move |view, state, event: &InputEvent, _window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    let text = state.read(cx).value().to_string();
-                    app_for_sub.update(cx, |app, cx| {
-                        app.state.rename_item(id, text);
-                        app.state.editing_layer_id = None;
-                        cx.notify();
-                    });
-                    view.rename_session = None;
-                    cx.notify();
-                }
-            },
-        );
-
-        let focus_handle = input.read(cx).focus_handle(cx);
-        focus_handle.focus(window, cx);
-
-        self.rename_session = Some((id, input, sub));
-        self.app.update(cx, |app, cx| {
-            app.state.selected_id = Some(id);
-            app.state.editing_layer_id = Some(id);
-            cx.notify();
-        });
-        cx.notify();
-    }
-
-    pub fn cancel_layer_rename(&mut self, cx: &mut Context<Self>) {
-        self.rename_session = None;
-        self.app.update(cx, |app, cx| {
-            app.state.editing_layer_id = None;
-            cx.notify();
-        });
-        cx.notify();
-    }
-
-    pub fn commit_layer_rename(&mut self, id: u64, cx: &mut Context<Self>) {
-        let text = self
-            .rename_session
-            .as_ref()
-            .filter(|(sess_id, _, _)| *sess_id == id)
-            .map(|(_, input, _)| input.read(cx).value().to_string());
-
-        if let Some(text) = text {
-            self.app.update(cx, |app, cx| {
-                app.state.rename_item(id, text);
-                app.state.editing_layer_id = None;
-                cx.notify();
-            });
-        } else {
-            self.app.update(cx, |app, cx| {
-                app.state.editing_layer_id = None;
-                cx.notify();
-            });
-        }
-        self.rename_session = None;
-        cx.notify();
     }
 }
 

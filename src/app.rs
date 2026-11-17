@@ -13,9 +13,9 @@ use crate::{
     canvas::{
         geometry::load_dynamic_image,
         model::{
-            CanvasItem, ContextMenuState, FitMode, ImageAsset,
-            ImageTransform, LayoutMode, IdPhotoPreset, PrintRenderSnapshot, ShapeKind,
-            TextAlignMode, TextBoxData,
+            CanvasItem, ContextMenuState, FitMode, FreeformShapeKind, ImageAsset, ImageTransform,
+            LayoutMode, IdPhotoPreset, PrintRenderSnapshot, ShapeBoxData, ShapeKind, TextAlignMode,
+            TextBoxData,
         },
         CanvasView,
     },
@@ -561,6 +561,7 @@ impl StudioState {
             preset: None,
             image: None,
             text: None,
+            shape: None,
             transform: default_tf.clone(),
             corner_radius: 0.0,
             bg_color: None,
@@ -779,7 +780,7 @@ impl StudioState {
             LayoutMode::Freeform => self
                 .free_items
                 .iter()
-                .any(|i| i.image.is_some() || i.text.is_some()),
+                .any(|i| i.image.is_some() || i.text.is_some() || i.shape.is_some()),
         }
     }
 
@@ -907,6 +908,7 @@ impl StudioState {
                 preset: Some(self.id_photo_preset),
                 image: None,
                 text: None,
+                shape: None,
                 transform: ImageTransform::default(),
                 corner_radius: 0.0,
                 bg_color: None,
@@ -969,6 +971,7 @@ impl StudioState {
                 preset: None,
                 image: Some(asset),
                 text: None,
+                shape: None,
                 transform: ImageTransform::default(),
                 corner_radius: 0.0,
                 bg_color: None,
@@ -1043,6 +1046,7 @@ impl StudioState {
                 align: TextAlignMode::Left,
                 manual_size: false,
             }),
+            shape: None,
             transform: ImageTransform::default(),
             corner_radius: 0.0,
             bg_color: None,
@@ -1053,6 +1057,45 @@ impl StudioState {
         self.selected_id = Some(id);
         self.editing_text_id = None;
         self.status_message = self.language.tr("app.added_freeform_text");
+    }
+
+    pub fn add_freeform_shape(&mut self, kind: FreeformShapeKind) {
+        if self.mode != LayoutMode::Freeform {
+            return;
+        }
+        let (ml, mt, _, _) = self.paper.printable_bounds_px();
+        let paper = self.paper.clone();
+        let id = self.alloc_id();
+        let offset = self.free_items.len() as f32 * 32.0;
+        let mut item = CanvasItem {
+            id,
+            x_px: ml + 20.0 + offset,
+            y_px: mt + 20.0 + offset,
+            width_px: 300.0,
+            height_px: 300.0,
+            rotation_deg: 0.0,
+            lock_aspect: false,
+            shape_kind: ShapeKind::Rectangle,
+            fit_mode: FitMode::Cover,
+            cut_line: false,
+            cut_line_width: 1.0,
+            preset: None,
+            image: None,
+            text: None,
+            shape: Some(ShapeBoxData {
+                kind,
+                fill_color: gpui_kit::rgb(0x3B82F6).into(),
+            }),
+            transform: ImageTransform::default(),
+            corner_radius: 0.0,
+            bg_color: None,
+            custom_name: None,
+        };
+        Self::clamp_item_to_safe_margin(&paper, &mut item);
+        self.free_items.push(item);
+        self.selected_id = Some(id);
+        self.editing_text_id = None;
+        self.status_message = self.language.tr("app.added_freeform_shape");
     }
 
     #[allow(dead_code)]
@@ -1424,6 +1467,7 @@ mod tests {
             preset: None,
             image: None,
             text: None,
+            shape: None,
             transform: ImageTransform::default(),
             corner_radius: 0.0,
             bg_color: None,
@@ -1898,6 +1942,19 @@ mod tests {
             "Judul Acara"
         );
 
+        let snap = st.create_print_snapshot();
+        let cropped = snap.render_cropped_sheet();
+        assert!(cropped.sheet.width() > 1 && cropped.sheet.height() > 1);
+    }
+
+    #[test]
+    fn test_freeform_shape_workflow_and_snapshot() {
+        let mut st = StudioState::new();
+        st.reset_images_and_switch_mode(LayoutMode::Freeform);
+        st.add_freeform_shape(FreeformShapeKind::Star);
+        assert_eq!(st.free_items.len(), 1);
+        assert!(st.current_mode_has_images());
+        assert!(st.free_items[0].is_shape());
         let snap = st.create_print_snapshot();
         let cropped = snap.render_cropped_sheet();
         assert!(cropped.sheet.width() > 1 && cropped.sheet.height() > 1);

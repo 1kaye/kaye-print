@@ -6,7 +6,7 @@ use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 use crate::{
     canvas::geometry::{
         TEXT_BOX_PAD_PX, apply_image_transform, composite_item_onto_sheet,
-        composite_text_onto_sheet, dynamic_to_render_image,
+        composite_shape_onto_sheet, composite_text_onto_sheet, dynamic_to_render_image,
     },
     shared::{
         i18n::{DEFAULT_LANGUAGE, Language},
@@ -315,6 +315,41 @@ pub struct TextBoxData {
     pub manual_size: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreeformShapeKind {
+    Rectangle,
+    Circle,
+    Triangle,
+    Diamond,
+    Star,
+}
+
+impl FreeformShapeKind {
+    pub const ALL: &'static [Self] = &[
+        Self::Rectangle,
+        Self::Circle,
+        Self::Triangle,
+        Self::Diamond,
+        Self::Star,
+    ];
+
+    pub fn label_for(self, lang: Language) -> SharedString {
+        match self {
+            Self::Rectangle => lang.tr("app.shape_rect"),
+            Self::Circle => lang.tr("app.shape_circle"),
+            Self::Triangle => lang.tr("app.shape_triangle"),
+            Self::Diamond => lang.tr("app.shape_diamond"),
+            Self::Star => lang.tr("app.shape_star"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeBoxData {
+    pub kind: FreeformShapeKind,
+    pub fill_color: Hsla,
+}
+
 #[derive(Clone)]
 pub struct CanvasItem {
     pub id: u64,
@@ -333,6 +368,7 @@ pub struct CanvasItem {
     pub preset: Option<IdPhotoPreset>,
     pub image: Option<ImageAsset>,
     pub text: Option<TextBoxData>,
+    pub shape: Option<ShapeBoxData>,
     pub transform: ImageTransform,
     pub corner_radius: f32,
     pub bg_color: Option<Hsla>,
@@ -344,8 +380,14 @@ impl CanvasItem {
         self.text.is_some()
     }
 
+    pub fn is_shape(&self) -> bool {
+        self.shape.is_some()
+    }
+
     pub fn is_printable(&self) -> bool {
-        self.image.is_some() || self.text.as_ref().is_some_and(|t| !t.content.trim().is_empty())
+        self.image.is_some()
+            || self.text.as_ref().is_some_and(|t| !t.content.trim().is_empty())
+            || self.shape.is_some()
     }
 
     #[allow(dead_code)]
@@ -371,6 +413,9 @@ impl CanvasItem {
                 return SharedString::from(first_line.to_string());
             }
             return lang.fallback_text(index + 1);
+        }
+        if let Some(sb) = &self.shape {
+            return sb.kind.label_for(lang);
         }
         lang.fallback_photo(index + 1)
     }
@@ -496,6 +541,24 @@ impl PrintRenderSnapshot {
                     item.width_px.round().max(1.0) as u32,
                     item.height_px.round().max(1.0) as u32,
                     TEXT_BOX_PAD_PX,
+                );
+            } else if is_freeform && let Some(sb) = &item.shape {
+                let rgb = sb.fill_color.to_rgb();
+                let fill_rgba = [
+                    (rgb.r * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (rgb.g * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (rgb.b * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (rgb.a * 255.0).round().clamp(0.0, 255.0) as u8,
+                ];
+                composite_shape_onto_sheet(
+                    sheet,
+                    sb.kind,
+                    fill_rgba,
+                    (item.x_px - offset_x_px).round() as i32,
+                    (item.y_px - offset_y_px).round() as i32,
+                    item.width_px.round().max(1.0) as u32,
+                    item.height_px.round().max(1.0) as u32,
+                    item.corner_radius,
                 );
             }
         }

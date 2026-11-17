@@ -1,23 +1,117 @@
 use std::{sync::Arc, time::Duration};
 
 use gpui_kit::{
-    App, AppContext as _, AnyElement, Context, DragMoveEvent, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, ObjectFit, ParentElement, Render, RenderImage, SharedString,
-    StatefulInteractiveElement as _, Styled, StyledImage as _, Window,
+    App, AppContext as _, AnyElement, Context, DragMoveEvent, Entity, Focusable as _,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ObjectFit, ParentElement,
+    Render, RenderImage, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _,
+    Subscription, Window,
     assets::IconName,
     base::{Spring, spring},
     component::{
         ActiveTheme as _, Disableable as _, group_box::{GroupBox, GroupBoxVariants as _},
         h_flex, Icon, Sizable as _,
         button::{Button, ButtonVariants as _},
-        input::Input,
+        input::{Input, InputEvent, InputState},
     },
     div, img,
     prelude::FluentBuilder as _,
     px, transparent_black,
 };
 
-use super::inspector_view::InspectorView;
+use crate::app::StudioApp;
+
+pub struct LayerListView {
+    pub app: Entity<StudioApp>,
+    pub rename_session: Option<(u64, Entity<InputState>, Subscription)>,
+    pub drag_hover: Option<(u64, usize)>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl LayerListView {
+    pub fn new(app: Entity<StudioApp>, cx: &mut Context<Self>) -> Self {
+        let _subscriptions = vec![
+            cx.observe(&app, |_, _, cx| {
+                cx.notify();
+            }),
+        ];
+        Self {
+            app,
+            rename_session: None,
+            drag_hover: None,
+            _subscriptions,
+        }
+    }
+
+    pub fn start_layer_rename(
+        &mut self,
+        id: u64,
+        current_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(current_name));
+        let app_for_sub = self.app.clone();
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            move |view, state, event: &InputEvent, _window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let text = state.read(cx).value().to_string();
+                    app_for_sub.update(cx, |app, cx| {
+                        app.state.rename_item(id, text);
+                        app.state.editing_layer_id = None;
+                        cx.notify();
+                    });
+                    view.rename_session = None;
+                    cx.notify();
+                }
+            },
+        );
+
+        let focus_handle = input.read(cx).focus_handle(cx);
+        focus_handle.focus(window, cx);
+
+        self.rename_session = Some((id, input, sub));
+        self.app.update(cx, |app, cx| {
+            app.state.selected_id = Some(id);
+            app.state.editing_layer_id = Some(id);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    pub fn cancel_layer_rename(&mut self, cx: &mut Context<Self>) {
+        self.rename_session = None;
+        self.app.update(cx, |app, cx| {
+            app.state.editing_layer_id = None;
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    pub fn commit_layer_rename(&mut self, id: u64, cx: &mut Context<Self>) {
+        let text = self
+            .rename_session
+            .as_ref()
+            .filter(|(sess_id, _, _)| *sess_id == id)
+            .map(|(_, input, _)| input.read(cx).value().to_string());
+
+        if let Some(text) = text {
+            self.app.update(cx, |app, cx| {
+                app.state.rename_item(id, text);
+                app.state.editing_layer_id = None;
+                cx.notify();
+            });
+        } else {
+            self.app.update(cx, |app, cx| {
+                app.state.editing_layer_id = None;
+                cx.notify();
+            });
+        }
+        self.rename_session = None;
+        cx.notify();
+    }
+}
 
 const LAYER_ROW_HEIGHT: f32 = 34.0;
 const LAYER_ROW_GAP: f32 = 4.0;
@@ -42,6 +136,7 @@ pub(crate) fn compute_drag_preview_order(
 fn render_layer_thumbnail(
     thumbnail: Option<Arc<RenderImage>>,
     is_text: bool,
+    is_shape: bool,
     cx: &App,
 ) -> AnyElement {
     if let Some(rendered) = thumbnail {
@@ -70,6 +165,8 @@ fn render_layer_thumbnail(
             .child(
                 Icon::new(if is_text {
                     IconName::FileText
+                } else if is_shape {
+                    IconName::Frame
                 } else {
                     IconName::Image
                 })
@@ -86,6 +183,7 @@ pub struct DragLayerPayload {
     pub label: SharedString,
     pub thumbnail: Option<Arc<RenderImage>>,
     pub is_text: bool,
+    pub is_shape: bool,
     pub is_selected: bool,
 }
 
@@ -124,7 +222,7 @@ impl Render for DragLayerPayload {
                                     .flex_shrink_0()
                                     .text_color(cx.theme().primary),
                             )
-                            .child(render_layer_thumbnail(self.thumbnail.clone(), self.is_text, cx))
+                            .child(render_layer_thumbnail(self.thumbnail.clone(), self.is_text, self.is_shape, cx))
                             .child(
                                 div()
                                     .flex_1()
@@ -157,38 +255,35 @@ impl Render for DragLayerPayload {
     }
 }
 
-pub fn render_layer_list(
-    sidebar: &mut InspectorView,
-    window: &mut Window,
-    cx: &mut Context<InspectorView>,
-) -> impl IntoElement {
-    let (free_items, selected_id, editing_layer_id, lang) = {
-        let app_guard = sidebar.app.read(cx);
-        (
-            app_guard.state.free_items.clone(),
-            app_guard.state.selected_id,
-            app_guard.state.editing_layer_id,
-            app_guard.state.language,
-        )
-    };
+impl Render for LayerListView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (free_items, selected_id, editing_layer_id, lang) = {
+            let app_guard = self.app.read(cx);
+            (
+                app_guard.state.free_items.clone(),
+                app_guard.state.selected_id,
+                app_guard.state.editing_layer_id,
+                app_guard.state.language,
+            )
+        };
 
-    if free_items.is_empty() {
-        sidebar.drag_hover = None;
-        return div().into_any_element();
-    }
+        if free_items.is_empty() {
+            self.drag_hover = None;
+            return div().into_any_element();
+        }
 
-    if !cx.has_active_drag() {
-        sidebar.drag_hover = None;
-    }
+        if !cx.has_active_drag() {
+            self.drag_hover = None;
+        }
 
-    let rename_input = sidebar
-        .rename_session
-        .as_ref()
-        .map(|(sess_id, input, _)| (*sess_id, input.clone()));
+        let rename_input = self
+            .rename_session
+            .as_ref()
+            .map(|(sess_id, input, _)| (*sess_id, input.clone()));
 
-    let total = free_items.len();
-    let ids_top_to_bottom: Vec<u64> = free_items.iter().rev().map(|item| item.id).collect();
-    let active_drag_hover = sidebar.drag_hover;
+        let total = free_items.len();
+        let ids_top_to_bottom: Vec<u64> = free_items.iter().rev().map(|item| item.id).collect();
+        let active_drag_hover = self.drag_hover;
     let preview_order = compute_drag_preview_order(&ids_top_to_bottom, active_drag_hover);
     let dragged_src_id = active_drag_hover.map(|(src_id, _)| src_id);
 
@@ -217,6 +312,7 @@ pub fn render_layer_list(
         let is_editing = rename_entity.is_some();
         let label = item.layer_name_for(idx, lang);
         let is_text = item.is_text();
+        let is_shape = item.is_shape();
         let thumbnail = item.image.as_ref().map(|asset| asset.rendered.clone());
 
         let name_slot = if let Some(input_entity) = rename_entity {
@@ -367,6 +463,7 @@ pub fn render_layer_list(
                             label: drag_label,
                             thumbnail: drag_thumb,
                             is_text,
+                            is_shape,
                             is_selected,
                         },
                         |payload, _, _, cx| cx.new(|_| payload.clone()),
@@ -391,7 +488,7 @@ pub fn render_layer_list(
                                         .flex_shrink_0()
                                         .text_color(cx.theme().muted_foreground),
                                 )
-                                .child(render_layer_thumbnail(thumbnail, is_text, cx))
+                                .child(render_layer_thumbnail(thumbnail, is_text, is_shape, cx))
                                 .child(name_slot),
                         )
                         .child(trailing_actions),
@@ -453,6 +550,7 @@ pub fn render_layer_list(
                 .children(layer_elements),
         )
         .into_any_element()
+    }
 }
 
 #[cfg(test)]
