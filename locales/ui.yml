@@ -1,0 +1,461 @@
+_version: 2
+
+app:
+  panel_open_tooltip:
+    id: Buka Panel
+    en: Open Panel
+  panel_close_tooltip:
+    id: Tutup Panel
+    en: Close Panel
+  theme_light_tooltip:
+    id: Ganti ke Tema Terang
+    en: Switch to Light Theme
+  theme_dark_tooltip:
+    id: Ganti ke Tema Gelap
+    en: Switch to Dark Theme
+
+  mode_id_photo:
+    id: Pas Foto
+    en: ID Photo
+  mode_freeform:
+    id: Bebas
+    en: Freeform
+  mode_full_image:
+    id: Halaman Penuh
+    en: Full Page
+  switch_mode_title:
+    id: "Ganti Mode Kerja?"
+    en: "Switch Layout Mode?"
+  switch_mode_desc:
+    id: "Beralih mode akan menghapus gambar yang ada di kanvas saat ini. Apakah Anda yakin ingin melanjutkan?"
+    en: "Switching modes will clear the images currently on the canvas. Are you sure you want to continue?"
+  cancel:
+    id: Batal
+    en: Cancel
+  switch_mode_confirm:
+    id: "Ya, Beralih"
+    en: "Yes, Switch"
+
+  layout_and_paper:
+    id: "Tata Letak & Kertas"
+    en: "Layout & Paper"
+  select_printer:
+    id: Pilih Printer
+    en: Select Printer
+  no_printer_found:
+    id: "(Tidak ada printer ditemukan)"
+    en: "(No printer found)"
+  no_printer_bracket:
+    id: "(Tidak ada printer)"
+    en: "(No printer)"
+  color_mode:
+    id: Mode Warna
+    en: Color Mode
+  color:
+    id: Berwarna
+    en: Color
+  grayscale:
+    id: Hitam Putih
+    en: Grayscale
+  paper_size:
+    id: Ukuran Kertas
+    en: Paper Size
+  width:
+    id: Lebar
+    en: Width
+  height:
+    id: Tinggi
+    en: Height
+  orientation:
+    id: Orientasi
+    en: Orientation
+  portrait:
+    id: Tegak
+    en: Portrait
+  portrait_full:
+    id: "Tegak (Portrait)"
+    en: Portrait
+  landscape:
+    id: Mendatar
+    en: Landscape
+  landscape_full:
+    id: "Mendatar (Landscape)"
+    en: Landscape
+  safe_margin:
+    id: Margin Aman
+    en: Safe Margin
+  image_fit:
+    id: Penyesuaian Gambar
+    en: Image Fit
+  fit_cover:
+    id: Isi Penuh
+    en: Fill
+  fit_contain:
+    id: Pas
+    en: Fit
+  fit_stretch:
+    id: Rentang
+    en: Stretch
+  fit_center:
+    id: Tengah
+    en: Center
+  printer_settings:
+    id: Pengaturan Printer
+    en: Printer Settings
+
+  frame_shape:
+    id: Bentuk Frame
+    en: Frame Shape
+  shape_rect:
+    id: Kotak
+    en: Rectangle
+  shape_oval:
+    id: Oval
+    en: Oval
+  dimensions:
+    id: Ukuran Foto
+    en: Dimensions
+  custom:
+    id: Kustom
+    en: Custom
+  h_gap:
+    id: Jarak Horizontal
+    en: Horizontal Gap
+  v_gap:
+    id: Jarak Vertikal
+    en: Vertical Gap
+  frame_settings:
+    id: Pengaturan Frame
+    en: Frame Settings
+  cut_line:
+    id: Garis Potong
+    en: Cut Line
+  free_move:
+    id: Bebas Geser
+    en: Free Move
+  add:
+    id: Tambah
+    en: Add
+  selected_id_frame:
+    id: Frame Pas Foto Terpilih
+    en: Selected ID Frame
+  corner_radius:
+    id: "Sudut Lengkung (Rounded)"
+    en: Corner Radius
+  custom_options:
+    id: Opsi Tampilan Frame
+    en: Frame Appearance
+  bg_color:
+    id: Warna Latar
+    en: Background Color
+  line_width:
+    id: Tebal Garis
+    en: Line Width
+  choose_bg_color:
+    id: Pilih Warna Latar
+    en: Choose Background Color
+
+  freeform_layout:
+    id: Susun Bebas
+    en: Freeform Layout
+  add_photos:
+    id: Tambah Foto
+    en: Add Photos
+  add_text:
+    id: Tambah Teks
+    en: Add Text
+  layers_title:
+    id: "Lapisan (Layer)"
+    en: Layers
+  save_name_tooltip:
+    id: Simpan Nama
+    en: Save Name
+  move_up_tooltip:
+    id: Naikkan Lapisan
+    en: Move Layer Up
+  move_down_tooltip:
+    id: Turunkan Lapisan
+    en: Move Layer Down
+  selected_image:
+    id: Gambar Terpilih
+    en: Selected Image
+  selected_text:
+    id: Teks Terpilih
+    en: Selected Text
+  text_content:
+    id: Isi Teks
+    en: Text Content
+  text_placeholder:
+    id: "Ketik teks di sini..."
+    en: "Type text here..."
+  default_text_content:
+    id: Teks Baru
+    en: New Text
+  font_size:
+    id: Ukuran Font
+    en: Font Size
+  font_family:
+    id: Jenis Font
+    en: Font
+  font_color:
+    id: Warna Font
+    en: Font Color
+  text_align:
+    id: Perataan Teks
+    en: Text Alignment
+  text_align_justify:
+    id: Rata Kiri-Kanan
+    en: Justify
+  alignment:
+    id: Perataan Posisi
+    en: Alignment
+  align_left_tooltip:
+    id: Rata Kiri
+    en: Align Left
+  align_center_tooltip:
+    id: Tengah Horizontal
+    en: Center Horizontally
+  align_right_tooltip:
+    id: Rata Kanan
+    en: Align Right
+  align_middle_tooltip:
+    id: Tengah Vertikal
+    en: Center Vertically
+  align_dist_tooltip:
+    id: Distribusi Rata
+    en: Distribute Evenly
+  fallback_photo:
+    id: "Foto %{index}"
+    en: "Photo %{index}"
+  fallback_text:
+    id: "Teks %{index}"
+    en: "Text %{index}"
+
+  print_btn:
+    id: Cetak
+    en: Print
+  printing_btn:
+    id: "Mencetak..."
+    en: "Printing..."
+  save_pdf_btn:
+    id: Simpan PDF
+    en: Save PDF
+  saving_btn:
+    id: "Menyimpan..."
+    en: "Saving..."
+
+  ctx_replace_photo:
+    id: "Pilih / Ganti Foto"
+    en: "Select / Replace Photo"
+  ctx_edit_photo:
+    id: "Edit Foto..."
+    en: "Edit Photo..."
+  ctx_crop:
+    id: Crop
+    en: Crop
+  ctx_rotate_cw:
+    id: "Putar Kanan 90°"
+    en: "Rotate 90° CW"
+  ctx_flip_h:
+    id: Balik Horizontal
+    en: Flip Horizontal
+  ctx_reset_transform:
+    id: Reset Transformasi
+    en: Reset Transform
+  ctx_duplicate:
+    id: Duplikasi
+    en: Duplicate
+  ctx_delete:
+    id: Hapus
+    en: Delete
+
+  editor_back:
+    id: Kembali
+    en: Back
+  editor_back_tooltip:
+    id: Kembali ke Halaman Utama
+    en: Back to Workspace
+  editor_edit:
+    id: Edit
+    en: Edit
+  editor_edit_tooltip:
+    id: Menu Pengaturan Gambar
+    en: Image Edit Menu
+  editor_undo:
+    id: Undo
+    en: Undo
+  editor_rotate_cw:
+    id: "Putar Kanan 90°"
+    en: "Rotate 90° CW"
+  editor_flip_h:
+    id: Balik Horizontal
+    en: Flip Horizontal
+  editor_crop:
+    id: Crop
+    en: Crop
+  editor_reset:
+    id: Reset
+    en: Reset
+  editor_save:
+    id: Simpan
+    en: Save
+  editor_save_tooltip:
+    id: "Terapkan & Simpan Perubahan Foto"
+    en: "Apply & Save Photo Changes"
+  zoom_out_tooltip:
+    id: Perkecil Zoom
+    en: Zoom Out
+  zoom_reset_tooltip:
+    id: "Reset Zoom 100%"
+    en: "Reset Zoom 100%"
+  zoom_in_tooltip:
+    id: Perbesar Zoom
+    en: Zoom In
+  crop_cancel_tooltip:
+    id: Batalkan Pemotongan
+    en: Cancel Crop
+  crop_reset_area:
+    id: Reset Area
+    en: Reset Area
+  crop_reset_area_tooltip:
+    id: Reset Area Potong ke Penuh
+    en: Reset Crop Area to Full
+  crop_apply:
+    id: Terapkan Potongan
+    en: Apply Crop
+  crop_apply_tooltip:
+    id: Terapkan Pemotongan Gambar
+    en: Apply Image Crop
+  crop_area:
+    id: "Area Potong: %{w}% × %{h}%"
+    en: "Crop Area: %{w}% × %{h}%"
+
+  media_type:
+    id: Jenis Kertas
+    en: Media Type
+  print_quality:
+    id: Kualitas Cetak
+    en: Print Quality
+  quality_draft:
+    id: "Draf (Cepat)"
+    en: "Draft (Fast)"
+  quality_standard:
+    id: Standar
+    en: Standard
+  quality_high:
+    id: "Tinggi (Foto)"
+    en: "High (Photo)"
+  grayscale_full:
+    id: "Hitam Putih (Grayscale)"
+    en: "Black & White (Grayscale)"
+  copies_label:
+    id: "Jumlah Salinan (Copies)"
+    en: Copies
+  apply:
+    id: Terapkan
+    en: Apply
+  device_config:
+    id: "Konfigurasi perangkat (%{printer})"
+    en: "Device configuration (%{printer})"
+
+  dialog_pick_images:
+    id: Pilih Gambar
+    en: Select Images
+  dialog_pick_single_image:
+    id: Pilih Satu Gambar
+    en: Select an Image
+  dialog_all_images:
+    id: "Semua Gambar (*.jpg, *.jpeg, *.png, *.webp)"
+    en: "All Images (*.jpg, *.jpeg, *.png, *.webp)"
+  dialog_all_files:
+    id: "Semua Berkas (*.*)"
+    en: "All Files (*.*)"
+  dialog_save_title:
+    id: Simpan Berkas Cetak
+    en: Save Print File
+  dialog_pdf_filter:
+    id: "Dokumen PDF (*.pdf)"
+    en: "PDF Document (*.pdf)"
+  dialog_png_filter:
+    id: "Gambar PNG (*.png)"
+    en: "PNG Image (*.png)"
+
+  status_ready:
+    id: Siap
+    en: Ready
+  status_photo_deleted:
+    id: Foto dihapus
+    en: Photo deleted
+  status_printer_applied:
+    id: Pengaturan printer diterapkan
+    en: Printer settings applied
+  status_editor_saved:
+    id: Perubahan foto disimpan
+    en: Photo changes saved
+  warn_title:
+    id: Peringatan
+    en: Warning
+  warn_no_printer:
+    id: Tidak ada printer aktif yang terdeteksi. Silakan nyalakan printer terlebih dahulu.
+    en: No active printer detected. Please turn on your printer first.
+  warn_printer_not_ready:
+    id: Printer Tidak Siap
+    en: Printer Not Ready
+  warn_empty_canvas:
+    id: Belum ada foto di kanvas untuk dicetak
+    en: No photos on the canvas to print
+  warn_empty_canvas_title:
+    id: Kanvas Kosong
+    en: Empty Canvas
+  print_success_title:
+    id: Perintah Cetak Terkirim
+    en: Print Sent
+  print_error_title:
+    id: Gagal Mencetak
+    en: Print Failed
+  export_success_title:
+    id: Berhasil Menyimpan
+    en: Saved
+  export_error_title:
+    id: Gagal Menyimpan
+    en: Save Failed
+
+  open_printer_props_err:
+    id: "Gagal membuka properti printer: %{err}"
+    en: "Failed to open printer properties: %{err}"
+  processing_doc:
+    id: "Memproses dokumen ke '%{printer}'..."
+    en: "Processing document for '%{printer}'..."
+  print_sent_status:
+    id: "Berhasil dikirim ke printer '%{printer}'"
+    en: "Sent to printer '%{printer}'"
+  print_sent_notif:
+    id: "Dokumen berhasil dikirim ke printer '%{printer}'"
+    en: "Document sent to printer '%{printer}'"
+  print_failed_status:
+    id: "Cetak gagal: %{err}"
+    en: "Print failed: %{err}"
+  print_failed_notif:
+    id: "Terjadi kesalahan saat mencetak: %{err}"
+    en: "Error while printing: %{err}"
+  saved_status:
+    id: "Tersimpan: %{path}"
+    en: "Saved: %{path}"
+  pdf_saved_notif:
+    id: "PDF berhasil disimpan ke %{path}"
+    en: "PDF saved to %{path}"
+  loaded_photo:
+    id: "Foto dimuat: %{name}"
+    en: "Photo loaded: %{name}"
+  switched_mode:
+    id: "Beralih ke %{mode}"
+    en: "Switched to %{mode}"
+  added_id_photos:
+    id: "+%{qty} pas foto (%{w}×%{h} cm)"
+    en: "+%{qty} ID photo(s) (%{w}×%{h} cm)"
+  added_freeform_photos:
+    id: "+%{count} foto ditambahkan"
+    en: "+%{count} photo(s) added"
+  added_freeform_text:
+    id: "+1 kotak teks ditambahkan"
+    en: "+1 text box added"
