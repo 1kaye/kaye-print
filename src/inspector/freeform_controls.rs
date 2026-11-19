@@ -5,6 +5,7 @@ use gpui_kit::{
     component::{
         ActiveTheme as _, Icon, IndexPath, Sizable as _, Size,
         button::{Button, ButtonGroup, ButtonVariants as _},
+        checkbox::Checkbox,
         group_box::{GroupBox, GroupBoxVariants as _},
         h_flex,
         input::{InputEvent, Textarea, TextareaState},
@@ -13,6 +14,7 @@ use gpui_kit::{
         select::{SearchableVec, Select, SelectEvent, SelectState},
         v_flex,
     },
+    div,
     prelude::FluentBuilder as _,
     px,
 };
@@ -166,9 +168,13 @@ pub fn render_freeform_panel(
     window: &mut Window,
     cx: &mut Context<InspectorView>,
 ) -> impl IntoElement {
-    let (selected, lang) = {
+    let (selected, dpi, lang) = {
         let app_guard = sidebar.app.read(cx);
-        (app_guard.state.selected_item().cloned(), app_guard.state.language)
+        (
+            app_guard.state.selected_item().cloned(),
+            app_guard.state.paper.dpi,
+            app_guard.state.language,
+        )
     };
     let default_font_family = cx.theme().font_family.to_string();
 
@@ -267,9 +273,166 @@ pub fn render_freeform_panel(
         )
         // 2. Layers card - isolated Entity<LayerListView> so spring animation only redraws layers
         .child(sidebar.layer_list.clone())
-        // 3. Selected item card: show "Selected Text" for text boxes, or "Selected Image" for photos
+        // 3. Position & Size card (shown for every selected item: photo, shape, or text)
         .when_some(selected, |col, item| {
             let id = item.id;
+            let is_text = item.is_text();
+            let is_shape = item.is_shape();
+            let cur_w_cm = (item.width_px / dpi as f32) * 2.54;
+            let cur_h_cm = (item.height_px / dpi as f32) * 2.54;
+            let lock_aspect = item.lock_aspect;
+
+            let pos_card_title = if is_text {
+                lang.tr("app.position_only")
+            } else {
+                lang.tr("app.position_and_size")
+            };
+
+            let col = col.child(
+                GroupBox::new().outline().title(pos_card_title).child(
+                    v_flex()
+                        .gap(px(10.0))
+                        .w_full()
+                        .child(
+                            v_flex()
+                                .gap(px(4.0))
+                                .child(
+                                    Label::new(lang.tr("app.alignment"))
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(
+                                    ButtonGroup::new(("freeform-align-group", id))
+                                        .outline()
+                                        .with_size(Size::Medium)
+                                        .w_full()
+                                        .child(
+                                            Button::new("align-left")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(IconName::AlignStartHorizontal)
+                                                        .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_left_tooltip")),
+                                        )
+                                        .child(
+                                            Button::new("align-center")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(IconName::AlignCenterHorizontal)
+                                                        .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_center_tooltip")),
+                                        )
+                                        .child(
+                                            Button::new("align-right")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(IconName::AlignEndHorizontal)
+                                                        .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_right_tooltip")),
+                                        )
+                                        .child(
+                                            Button::new("align-middle")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(IconName::AlignCenterVertical)
+                                                        .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_middle_tooltip")),
+                                        )
+                                        .child(
+                                            Button::new("align-dist")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(
+                                                        IconName::AlignHorizontalSpaceBetween,
+                                                    )
+                                                    .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_dist_tooltip")),
+                                        )
+                                        .on_click(cx.listener(
+                                            |this, clicks: &Vec<usize>, _, cx| {
+                                                if let Some(&first) = clicks.first() {
+                                                    this.app.update(cx, |app, cx| {
+                                                        match first {
+                                                            0 => app.state.align_selected("left"),
+                                                            1 => app.state.align_selected("center"),
+                                                            2 => app.state.align_selected("right"),
+                                                            3 => app.state.align_selected("middle"),
+                                                            4 => app
+                                                                .state
+                                                                .align_selected("distribute"),
+                                                            _ => {}
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            },
+                                        )),
+                                ),
+                        )
+                        .when(!is_text, |v| {
+                            v.child(
+                                h_flex()
+                                    .gap_2()
+                                    .w_full()
+                                    .child(div().flex_1().child(render_number_field(
+                                        ("freeform-item-w", id),
+                                        lang.tr("app.width"),
+                                        cur_w_cm,
+                                        0.1,
+                                        0.5,
+                                        120.0,
+                                        1,
+                                        "cm",
+                                        &sidebar.app,
+                                        window,
+                                        cx,
+                                        move |val, app, cx| {
+                                            app.state.resize_freeform_item_cm(id, Some(val), None);
+                                            cx.notify();
+                                        },
+                                    )))
+                                    .child(div().flex_1().child(render_number_field(
+                                        ("freeform-item-h", id),
+                                        lang.tr("app.height"),
+                                        cur_h_cm,
+                                        0.1,
+                                        0.5,
+                                        120.0,
+                                        1,
+                                        "cm",
+                                        &sidebar.app,
+                                        window,
+                                        cx,
+                                        move |val, app, cx| {
+                                            app.state.resize_freeform_item_cm(id, None, Some(val));
+                                            cx.notify();
+                                        },
+                                    ))),
+                            )
+                            .when(!is_shape, |v| {
+                                v.child(
+                                    Checkbox::new(("freeform-lock-aspect", id))
+                                        .label(lang.tr("app.lock_aspect_ratio"))
+                                        .checked(lock_aspect)
+                                        .on_change(cx.listener(move |this, checked: &bool, _, cx| {
+                                            let locked = *checked;
+                                            this.app.update(cx, |app, cx| {
+                                                app.state.set_freeform_lock_aspect(id, locked);
+                                                cx.notify();
+                                            });
+                                        })),
+                                )
+                            })
+                        }),
+                ),
+            );
+
+            // 4. Item-specific card: Selected Shape, Selected Text, or Selected Image
             if let Some(sb) = item.shape {
                 col.child(
                     GroupBox::new().outline().title(lang.tr("app.selected_shape")).child(
@@ -493,117 +656,30 @@ pub fn render_freeform_panel(
                 col.child(
                     GroupBox::new().outline().title(lang.tr("app.selected_image")).child(
                         v_flex()
-                            .gap(px(10.0))
+                            .gap(px(4.0))
                             .w_full()
-                            // Layout Perataan Posisi
                             .child(
-                                v_flex()
-                                    .gap(px(4.0))
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
                                     .child(
-                                        Label::new(lang.tr("app.alignment"))
+                                        Label::new(lang.tr("app.corner_radius"))
                                             .text_sm()
                                             .text_color(cx.theme().muted_foreground),
                                     )
                                     .child(
-                                        ButtonGroup::new(("freeform-align-group", id))
-                                            .outline()
-                                            .with_size(Size::Medium)
-                                            .w_full()
-                                            .child(
-                                                Button::new("align-left")
-                                                    .flex_1()
-                                                    .icon(
-                                                        Icon::new(IconName::AlignStartHorizontal)
-                                                            .with_size(Size::Medium),
-                                                    )
-                                                    .tooltip(lang.tr("app.align_left_tooltip")),
-                                            )
-                                            .child(
-                                                Button::new("align-center")
-                                                    .flex_1()
-                                                    .icon(
-                                                        Icon::new(IconName::AlignCenterHorizontal)
-                                                            .with_size(Size::Medium),
-                                                    )
-                                                    .tooltip(lang.tr("app.align_center_tooltip")),
-                                            )
-                                            .child(
-                                                Button::new("align-right")
-                                                    .flex_1()
-                                                    .icon(
-                                                        Icon::new(IconName::AlignEndHorizontal)
-                                                            .with_size(Size::Medium),
-                                                    )
-                                                    .tooltip(lang.tr("app.align_right_tooltip")),
-                                            )
-                                            .child(
-                                                Button::new("align-middle")
-                                                    .flex_1()
-                                                    .icon(
-                                                        Icon::new(IconName::AlignCenterVertical)
-                                                            .with_size(Size::Medium),
-                                                    )
-                                                    .tooltip(lang.tr("app.align_middle_tooltip")),
-                                            )
-                                            .child(
-                                                Button::new("align-dist")
-                                                    .flex_1()
-                                                    .icon(
-                                                        Icon::new(
-                                                            IconName::AlignHorizontalSpaceBetween,
-                                                        )
-                                                        .with_size(Size::Medium),
-                                                    )
-                                                    .tooltip(lang.tr("app.align_dist_tooltip")),
-                                            )
-                                            .on_click(cx.listener(
-                                                |this, clicks: &Vec<usize>, _, cx| {
-                                                    if let Some(&first) = clicks.first() {
-                                                        this.app.update(cx, |app, cx| {
-                                                            match first {
-                                                                0 => app.state.align_selected("left"),
-                                                                1 => app.state.align_selected("center"),
-                                                                2 => app.state.align_selected("right"),
-                                                                3 => app.state.align_selected("middle"),
-                                                                4 => {
-                                                                    app.state.align_selected("distribute")
-                                                                }
-                                                                _ => {}
-                                                            }
-                                                            cx.notify();
-                                                        });
-                                                    }
-                                                },
-                                            )),
+                                        Label::new(format!("{:.0} px", item.corner_radius))
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
                                     ),
                             )
-                            // Slider Rounded
-                            .child(
-                                v_flex()
-                                    .gap(px(4.0))
-                                    .child(
-                                        h_flex()
-                                            .justify_between()
-                                            .items_center()
-                                            .child(
-                                                Label::new(lang.tr("app.corner_radius"))
-                                                    .text_sm()
-                                                    .text_color(cx.theme().muted_foreground),
-                                            )
-                                            .child(
-                                                Label::new(format!("{:.0} px", item.corner_radius))
-                                                    .text_sm()
-                                                    .text_color(cx.theme().muted_foreground),
-                                            ),
-                                    )
-                                    .child(render_rounded_slider(
-                                        id,
-                                        item.corner_radius,
-                                        &sidebar.app,
-                                        window,
-                                        cx,
-                                    )),
-                            ),
+                            .child(render_rounded_slider(
+                                id,
+                                item.corner_radius,
+                                &sidebar.app,
+                                window,
+                                cx,
+                            )),
                     ),
                 )
             }

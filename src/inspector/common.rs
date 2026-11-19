@@ -35,6 +35,7 @@ impl ButtonSelectedExt for Button {
 
 struct NumberFieldState {
     input: Entity<InputState>,
+    suppress_value: Option<String>,
     _sub: Subscription,
 }
 
@@ -80,10 +81,15 @@ pub(crate) fn render_number_field(
         let sub = cx.subscribe_in(
             &input,
             window,
-            move |_this: &mut NumberFieldState, input, event: &InputEvent, window, cx| {
+            move |this: &mut NumberFieldState, input, event: &InputEvent, window, cx| {
                 match event {
                     InputEvent::Change => {
                         let text = input.read(cx).value();
+                        if this.suppress_value.as_deref() == Some(text.as_ref()) {
+                            this.suppress_value = None;
+                            return;
+                        }
+                        this.suppress_value = None;
                         if let Ok(parsed) = text.parse::<f32>()
                             && parsed >= min
                             && parsed <= max
@@ -104,6 +110,7 @@ pub(crate) fn render_number_field(
                                 format!("{clamped:.1}")
                             };
                             if text.as_ref() != formatted.as_str() {
+                                this.suppress_value = Some(formatted.clone());
                                 input.update(cx, |state, cx| {
                                     state.set_value(formatted, window, cx);
                                 });
@@ -119,7 +126,11 @@ pub(crate) fn render_number_field(
             },
         );
 
-        NumberFieldState { input, _sub: sub }
+        NumberFieldState {
+            input,
+            suppress_value: None,
+            _sub: sub,
+        }
     });
 
     let current_str = if precision == 0 {
@@ -131,6 +142,9 @@ pub(crate) fn render_number_field(
     if input_entity.read(cx).value().as_ref() != current_str.as_str()
         && !input_entity.read(cx).focus_handle(cx).is_focused(window)
     {
+        field_state.update(cx, |st, _| {
+            st.suppress_value = Some(current_str.clone());
+        });
         input_entity.update(cx, |state, cx| {
             state.set_value(current_str, window, cx);
         });

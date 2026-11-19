@@ -188,6 +188,15 @@ app:
   selected_shape:
     id: Bentuk Terpilih
     en: Selected Shape
+  position_and_size:
+    id: "Posisi & Ukuran"
+    en: "Position & Size"
+  position_only:
+    id: Posisi
+    en: Position
+  lock_aspect_ratio:
+    id: Kunci Rasio Aspek
+    en: Lock Aspect Ratio
   fill_color:
     id: Warna Isi
     en: Fill Color

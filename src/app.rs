@@ -1098,6 +1098,65 @@ impl StudioState {
         self.status_message = self.language.tr("app.added_freeform_shape");
     }
 
+    pub fn resize_freeform_item_cm(
+        &mut self,
+        id: u64,
+        new_w_cm: Option<f32>,
+        new_h_cm: Option<f32>,
+    ) {
+        if self.mode != LayoutMode::Freeform {
+            return;
+        }
+        let paper = self.paper.clone();
+        let dpi = paper.dpi;
+        if let Some(item) = self.free_items.iter_mut().find(|i| i.id == id) {
+            if item.is_text() {
+                return;
+            }
+            let (ratio_w, ratio_h) = if let Some(asset) = &item.image {
+                asset.display_dimensions(&item.transform)
+            } else {
+                (item.width_px.max(1.0), item.height_px.max(1.0))
+            };
+            if let Some(w_cm) = new_w_cm {
+                let nw = cm_to_px(w_cm, dpi).round().max(24.0);
+                if item.lock_aspect {
+                    item.height_px = (nw * (ratio_h / ratio_w.max(1.0))).round().max(24.0);
+                }
+                item.width_px = nw;
+            } else if let Some(h_cm) = new_h_cm {
+                let nh = cm_to_px(h_cm, dpi).round().max(24.0);
+                if item.lock_aspect {
+                    item.width_px = (nh * (ratio_w / ratio_h.max(1.0))).round().max(24.0);
+                }
+                item.height_px = nh;
+            }
+            Self::clamp_item_to_safe_margin(&paper, item);
+        }
+    }
+
+    pub fn set_freeform_lock_aspect(&mut self, id: u64, locked: bool) {
+        if self.mode != LayoutMode::Freeform {
+            return;
+        }
+        let paper = self.paper.clone();
+        if let Some(item) = self.free_items.iter_mut().find(|i| i.id == id) {
+            if item.is_text() {
+                return;
+            }
+            item.lock_aspect = locked;
+            if locked {
+                if let Some(asset) = &item.image {
+                    let (nat_w, nat_h) = asset.display_dimensions(&item.transform);
+                    item.height_px = (item.width_px.max(1.0) * (nat_h / nat_w.max(1.0)))
+                        .round()
+                        .max(24.0);
+                }
+                Self::clamp_item_to_safe_margin(&paper, item);
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn bring_to_front(&mut self, id: u64) {
         if self.mode == LayoutMode::Freeform
@@ -1958,5 +2017,49 @@ mod tests {
         let snap = st.create_print_snapshot();
         let cropped = snap.render_cropped_sheet();
         assert!(cropped.sheet.width() > 1 && cropped.sheet.height() > 1);
+    }
+
+    #[test]
+    fn test_freeform_resize_with_and_without_lock_aspect() {
+        let mut st = StudioState::new();
+        st.reset_images_and_switch_mode(LayoutMode::Freeform);
+        st.add_freeform_shape(FreeformShapeKind::Rectangle);
+        let id = st.free_items[0].id;
+
+        // Initial shape is 300x300 (1:1). Unlock aspect -> change width only.
+        st.find_item_mut(id).unwrap().lock_aspect = false;
+        st.resize_freeform_item_cm(id, Some(4.0), None);
+        let after_unlocked = st.find_item(id).unwrap();
+        let expected_4cm = cm_to_px(4.0, st.paper.dpi).round();
+        assert!((after_unlocked.width_px - expected_4cm).abs() < 1.0);
+        assert!((after_unlocked.height_px - 300.0).abs() < 1.0);
+
+        // Lock aspect -> changing width scales height proportionally.
+        let ratio = after_unlocked.height_px / after_unlocked.width_px;
+        st.set_freeform_lock_aspect(id, true);
+        st.resize_freeform_item_cm(id, Some(8.0), None);
+        let after_locked = st.find_item(id).unwrap();
+        let new_ratio = after_locked.height_px / after_locked.width_px;
+        assert!((new_ratio - ratio).abs() < 0.02);
+
+        // Photo: unlock, stretch width, then re-enabling lock_aspect restores natural aspect ratio.
+        let photo_asset = ImageAsset::from_dynamic(
+            "photo.png",
+            None,
+            image::DynamicImage::new_rgb8(400, 200),
+            &ImageTransform::default(),
+        );
+        st.insert_loaded_freeform_assets(vec![photo_asset]);
+        let photo_id = st.selected_id.unwrap();
+        st.set_freeform_lock_aspect(photo_id, false);
+        let h_before = st.find_item(photo_id).unwrap().height_px;
+        st.resize_freeform_item_cm(photo_id, Some(10.0), None);
+        let stretched = st.find_item(photo_id).unwrap();
+        assert!((stretched.height_px - h_before).abs() < 1.0);
+
+        st.set_freeform_lock_aspect(photo_id, true);
+        let restored = st.find_item(photo_id).unwrap();
+        // Natural ratio is 400:200 = 2:1 -> width/height should be ~2.0 again.
+        assert!(((restored.width_px / restored.height_px) - 2.0).abs() < 0.02);
     }
 }

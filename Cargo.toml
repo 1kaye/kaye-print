@@ -12,20 +12,8 @@ rust-i18n = "4.2"
 tikv-jemallocator = "0.6"
 tikv-jemalloc-sys = "0.6"
 
-[profile.dev.package]
-image = { opt-level = 3 }
-png = { opt-level = 3 }
-zune-jpeg = { opt-level = 3 }
-image-webp = { opt-level = 3 }
-miniz_oxide = { opt-level = 3 }
-
-gpui-kit = { opt-level = 3 }
-gpui-kit-assets = { opt-level = 3 }
-gpui-component = { opt-level = 3 }
-gpui-pre = { opt-level = 3 }
-gpui-pre-platform = { opt-level = 3 }
-gpui-fast = { opt-level = 3 }
-gpui-fast-platform = { opt-level = 3 }
-rustybuzz = { opt-level = 3 }
-taffy = { opt-level = 3 }
-ttf-parser = { opt-level = 3 }
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+opt-level = 3

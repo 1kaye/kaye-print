@@ -285,7 +285,9 @@ pub(crate) fn render_canvas_item(
                 .when_some(item.bg_color, |d, bg| d.bg(bg))
                 .child(
                     img(asset.rendered.clone())
-                        .size_full()
+                        .w(px(w))
+                        .h(px(h))
+                        .aspect_ratio(w / h.max(1.0))
                         .object_fit(ObjectFit::Fill),
                 )
                 .into_any_element()
@@ -352,6 +354,7 @@ pub(crate) fn render_canvas_item(
                     .child(
                         img(asset.rendered.clone())
                             .size_full()
+                            .aspect_ratio(draw_w_f / draw_h_f.max(1.0))
                             .object_fit(ObjectFit::Fill),
                     )
                     .into_any_element()
