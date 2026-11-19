@@ -1,11 +1,13 @@
 use gpui_kit::{
-    Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, ParentElement, Styled, StyledImage as _, Window, hsla,
+    AppContext as _, Context, Entity, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Styled,
+    StyledImage as _, Subscription, Window, hsla,
     assets::IconName,
     component::{
-        ActiveTheme as _, Sizable as _,
+        ActiveTheme as _, IndexPath, Sizable as _,
         button::{Button, ButtonVariants as _},
         h_flex,
+        select::{SearchableVec, Select, SelectEvent, SelectState},
         separator::Separator,
         toolbar::Toolbar,
         v_flex,
@@ -19,7 +21,13 @@ use crate::{
     app::StudioApp,
     canvas::geometry::{apply_image_transform, dynamic_to_render_image},
     editor::{CropDragHandle, EditorSession},
+    shared::CropUnit,
 };
+
+struct CropUnitSelectState {
+    select: Entity<SelectState<SearchableVec<CropUnit>>>,
+    _sub: Subscription,
+}
 
 pub fn render_crop_view(
     app: &mut StudioApp,
@@ -28,6 +36,41 @@ pub fn render_crop_view(
     cx: &mut Context<StudioApp>,
 ) -> impl IntoElement {
     let lang = app.state.language;
+    let crop_unit = app.state.crop_unit;
+    let paper_dpi = app.state.paper.dpi;
+    let app_for_unit = cx.entity();
+
+    let unit_select_state = window.use_keyed_state("crop-unit-select", cx, |window, cx| {
+        let items = SearchableVec::new(CropUnit::ALL.to_vec());
+        let select = cx.new(|cx| {
+            SelectState::new(items, Some(IndexPath::new(crop_unit.index())), window, cx)
+        });
+        let sub = cx.subscribe_in(
+            &select,
+            window,
+            move |_this: &mut CropUnitSelectState,
+                  _select,
+                  event: &SelectEvent<SearchableVec<CropUnit>>,
+                  _window,
+                  cx| {
+                if let SelectEvent::Confirm(Some(chosen)) = event {
+                    let chosen_unit = *chosen;
+                    app_for_unit.update(cx, |app, cx| {
+                        app.state.crop_unit = chosen_unit;
+                        cx.notify();
+                    });
+                }
+            },
+        );
+        CropUnitSelectState { select, _sub: sub }
+    });
+
+    let unit_select_entity = unit_select_state.read(cx).select.clone();
+    if unit_select_entity.read(cx).selected_index(cx) != Some(IndexPath::new(crop_unit.index())) {
+        unit_select_entity.update(cx, |state, cx| {
+            state.set_selected_index(Some(IndexPath::new(crop_unit.index())), window, cx);
+        });
+    }
     // 1. Use the uncropped image cached during start_crop() for 0-lag rendering
     let base_rendered = session.crop_base_rendered.clone().unwrap_or_else(|| {
         let mut base_tf = session.working_transform.clone();
@@ -150,102 +193,55 @@ pub fn render_crop_view(
                             let dy = (my - sy) / disp_h.max(1.0);
                             let [ix, iy, iw, ih] = init_rect;
                             let min_s = 0.05_f32;
-                            let snap_thresh = 0.025_f32;
 
                             match handle {
                                 CropDragHandle::Left => {
-                                    let mut new_x = (ix + dx).clamp(0.0, ix + iw - min_s);
-                                    if new_x < snap_thresh {
-                                        new_x = 0.0;
-                                    }
+                                    let new_x = (ix + dx).clamp(0.0, ix + iw - min_s);
                                     let new_w = iw - (new_x - ix);
                                     s.crop_draft_rect[0] = new_x;
                                     s.crop_draft_rect[2] = new_w;
                                 }
                                 CropDragHandle::Right => {
-                                    let mut new_w = (iw + dx).clamp(min_s, 1.0 - ix);
-                                    if ix + new_w > 1.0 - snap_thresh {
-                                        new_w = 1.0 - ix;
-                                    }
+                                    let new_w = (iw + dx).clamp(min_s, 1.0 - ix);
                                     s.crop_draft_rect[2] = new_w;
                                 }
                                 CropDragHandle::Top => {
-                                    let mut new_y = (iy + dy).clamp(0.0, iy + ih - min_s);
-                                    if new_y < snap_thresh {
-                                        new_y = 0.0;
-                                    }
+                                    let new_y = (iy + dy).clamp(0.0, iy + ih - min_s);
                                     let new_h = ih - (new_y - iy);
                                     s.crop_draft_rect[1] = new_y;
                                     s.crop_draft_rect[3] = new_h;
                                 }
                                 CropDragHandle::Bottom => {
-                                    let mut new_h = (ih + dy).clamp(min_s, 1.0 - iy);
-                                    if iy + new_h > 1.0 - snap_thresh {
-                                        new_h = 1.0 - iy;
-                                    }
+                                    let new_h = (ih + dy).clamp(min_s, 1.0 - iy);
                                     s.crop_draft_rect[3] = new_h;
                                 }
                                 CropDragHandle::TopLeft => {
-                                    let mut new_x = (ix + dx).clamp(0.0, ix + iw - min_s);
-                                    if new_x < snap_thresh {
-                                        new_x = 0.0;
-                                    }
+                                    let new_x = (ix + dx).clamp(0.0, ix + iw - min_s);
                                     let new_w = iw - (new_x - ix);
-                                    let mut new_y = (iy + dy).clamp(0.0, iy + ih - min_s);
-                                    if new_y < snap_thresh {
-                                        new_y = 0.0;
-                                    }
+                                    let new_y = (iy + dy).clamp(0.0, iy + ih - min_s);
                                     let new_h = ih - (new_y - iy);
                                     s.crop_draft_rect = [new_x, new_y, new_w, new_h];
                                 }
                                 CropDragHandle::TopRight => {
-                                    let mut new_w = (iw + dx).clamp(min_s, 1.0 - ix);
-                                    if ix + new_w > 1.0 - snap_thresh {
-                                        new_w = 1.0 - ix;
-                                    }
-                                    let mut new_y = (iy + dy).clamp(0.0, iy + ih - min_s);
-                                    if new_y < snap_thresh {
-                                        new_y = 0.0;
-                                    }
+                                    let new_w = (iw + dx).clamp(min_s, 1.0 - ix);
+                                    let new_y = (iy + dy).clamp(0.0, iy + ih - min_s);
                                     let new_h = ih - (new_y - iy);
                                     s.crop_draft_rect = [ix, new_y, new_w, new_h];
                                 }
                                 CropDragHandle::BottomLeft => {
-                                    let mut new_x = (ix + dx).clamp(0.0, ix + iw - min_s);
-                                    if new_x < snap_thresh {
-                                        new_x = 0.0;
-                                    }
+                                    let new_x = (ix + dx).clamp(0.0, ix + iw - min_s);
                                     let new_w = iw - (new_x - ix);
-                                    let mut new_h = (ih + dy).clamp(min_s, 1.0 - iy);
-                                    if iy + new_h > 1.0 - snap_thresh {
-                                        new_h = 1.0 - iy;
-                                    }
+                                    let new_h = (ih + dy).clamp(min_s, 1.0 - iy);
                                     s.crop_draft_rect = [new_x, iy, new_w, new_h];
                                 }
                                 CropDragHandle::BottomRight => {
-                                    let mut new_w = (iw + dx).clamp(min_s, 1.0 - ix);
-                                    if ix + new_w > 1.0 - snap_thresh {
-                                        new_w = 1.0 - ix;
-                                    }
-                                    let mut new_h = (ih + dy).clamp(min_s, 1.0 - iy);
-                                    if iy + new_h > 1.0 - snap_thresh {
-                                        new_h = 1.0 - iy;
-                                    }
+                                    let new_w = (iw + dx).clamp(min_s, 1.0 - ix);
+                                    let new_h = (ih + dy).clamp(min_s, 1.0 - iy);
                                     s.crop_draft_rect = [ix, iy, new_w, new_h];
                                 }
                                 CropDragHandle::Body => {
-                                    let mut new_x = (ix + dx).clamp(0.0, 1.0 - iw);
-                                    if new_x < snap_thresh {
-                                        new_x = 0.0;
-                                    } else if new_x + iw > 1.0 - snap_thresh {
-                                        new_x = 1.0 - iw;
-                                    }
-                                    let mut new_y = (iy + dy).clamp(0.0, 1.0 - ih);
-                                    if new_y < snap_thresh {
-                                        new_y = 0.0;
-                                    } else if new_y + ih > 1.0 - snap_thresh {
-                                        new_y = 1.0 - ih;
-                                    }
+                                    let new_x = (ix + dx).clamp(0.0, 1.0 - iw);
+                                    let new_y = (iy + dy).clamp(0.0, 1.0 - ih);
                                     s.crop_draft_rect[0] = new_x;
                                     s.crop_draft_rect[1] = new_y;
                                 }
@@ -344,8 +340,9 @@ pub fn render_crop_view(
                         )
                         // Layer 2: Interactive Crop Box (clean without false internal grid lines)
                         .child({
-                            let crop_px_w = (cur_w * cw_norm).round().max(1.0) as u32;
-                            let crop_px_h = (cur_h * ch_norm).round().max(1.0) as u32;
+                            let crop_px_w = (cur_w * cw_norm).round().max(1.0);
+                            let crop_px_h = (cur_h * ch_norm).round().max(1.0);
+                            let dim_text = crop_unit.format_dimensions(crop_px_w, crop_px_h, paper_dpi);
                             div()
                                 .id("crop-interactive-overlay")
                                 .absolute()
@@ -359,7 +356,9 @@ pub fn render_crop_view(
                                         .flex()
                                         .justify_center()
                                         .child(
-                                            div()
+                                            h_flex()
+                                                .items_center()
+                                                .gap(px(4.0))
                                                 .px_2()
                                                 .py_0p5()
                                                 .rounded_sm()
@@ -367,7 +366,17 @@ pub fn render_crop_view(
                                                 .text_xs()
                                                 .text_color(gpui_kit::rgb(0xFFFFFF))
                                                 .whitespace_nowrap()
-                                                .child(format!("{crop_px_w} × {crop_px_h} px")),
+                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                    cx.stop_propagation();
+                                                })
+                                                .child(dim_text)
+                                                .child(
+                                                    Select::new(&unit_select_entity)
+                                                        .xsmall()
+                                                        .appearance(false)
+                                                        .w(px(56.0))
+                                                        .menu_width(px(72.0)),
+                                                ),
                                         ),
                                 )
                                 .child(

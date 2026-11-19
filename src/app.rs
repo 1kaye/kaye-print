@@ -29,7 +29,7 @@ use crate::{
         dialog::{filter_supported_images, prompt_open_images, prompt_save_export},
         i18n::{DEFAULT_LANGUAGE, Language},
         paper::PaperConfig,
-        units::{cm_to_px, compute_auto_flow_grid, mm_to_px, PhysicalUnit},
+        units::{cm_to_px, compute_auto_flow_grid, mm_to_px, CropUnit, PhysicalUnit},
     },
 };
 
@@ -493,6 +493,7 @@ impl Render for StudioApp {
 pub struct StudioState {
     pub route: ActiveRoute,
     pub language: Language,
+    pub crop_unit: CropUnit,
     pub mode: LayoutMode,
     pub sidebar_open: bool,
     pub paper: PaperConfig,
@@ -573,6 +574,7 @@ impl StudioState {
         let mut state = Self {
             route: ActiveRoute::Workspace,
             language: DEFAULT_LANGUAGE,
+            crop_unit: CropUnit::Px,
             mode: LayoutMode::IdPhoto,
             sidebar_open: true,
             paper,
