@@ -225,23 +225,107 @@ fn paint_freeform_shape(
     }
 }
 
-fn paint_dashed_selection_box(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+fn paint_dashed_selection_outline(
+    bounds: Bounds<Pixels>,
+    shape_kind: Option<FreeformShapeKind>,
+    corner_radius_disp: f32,
+    stroke_disp: f32,
+    rotation_deg: f32,
+    is_oval: bool,
+    color: Hsla,
+    window: &mut Window,
+) {
     let ox = f32::from(bounds.origin.x);
     let oy = f32::from(bounds.origin.y);
     let bw = f32::from(bounds.size.width);
     let bh = f32::from(bounds.size.height);
-    if bw <= 2.0 || bh <= 2.0 {
+    if bw <= 4.0 || bh <= 4.0 {
         return;
     }
-    let inset = 1.0;
+
+    let rad = rotation_deg.to_radians();
+    let cos_r = rad.cos();
+    let sin_r = rad.sin();
+    let item_ox = ox + 2.0;
+    let item_oy = oy + 2.0;
+    let item_w = (bw - 4.0).max(1.0);
+    let item_h = (bh - 4.0).max(1.0);
+
+    // 1. Primary dashed selection frame (rotates with shape, follows oval/rounded corners/Line)
     let mut builder = PathBuilder::stroke(px(1.5)).dash_array(&[px(5.0), px(3.0)]);
-    builder.move_to(point(px(ox + inset), px(oy + inset)));
-    builder.line_to(point(px(ox + bw - inset), px(oy + inset)));
-    builder.line_to(point(px(ox + bw - inset), px(oy + bh - inset)));
-    builder.line_to(point(px(ox + inset), px(oy + bh - inset)));
-    builder.close();
+    if is_oval {
+        append_shape_geometry(
+            &mut builder,
+            FreeformShapeKind::Circle,
+            ox,
+            oy,
+            bw,
+            bh,
+            1.0,
+            0.0,
+            cos_r,
+            sin_r,
+        );
+    } else if shape_kind == Some(FreeformShapeKind::Line) {
+        let hull_h = (stroke_disp + 10.0).max(14.0).min(bh);
+        let hull_oy = oy + (bh - hull_h) * 0.5;
+        append_shape_geometry(
+            &mut builder,
+            FreeformShapeKind::Rectangle,
+            ox,
+            hull_oy,
+            bw,
+            hull_h,
+            1.0,
+            4.0,
+            cos_r,
+            sin_r,
+        );
+    } else {
+        let r_clamped = if corner_radius_disp > 0.0 {
+            corner_radius_disp.min(item_w.min(item_h) * 0.5) + 2.0
+        } else {
+            0.0
+        };
+        append_shape_geometry(
+            &mut builder,
+            FreeformShapeKind::Rectangle,
+            ox,
+            oy,
+            bw,
+            bh,
+            1.0,
+            r_clamped,
+            cos_r,
+            sin_r,
+        );
+    }
     if let Ok(path) = builder.build() {
         window.paint_path(path, color);
+    }
+
+    // 2. For non-rectangular vector shapes, draw a subtle contour hugging the exact shape silhouette
+    if let Some(kind @ (FreeformShapeKind::Circle
+        | FreeformShapeKind::Triangle
+        | FreeformShapeKind::Diamond
+        | FreeformShapeKind::Star)) = shape_kind
+    {
+        let mut contour = PathBuilder::stroke(px(1.0));
+        append_shape_geometry(
+            &mut contour,
+            kind,
+            item_ox,
+            item_oy,
+            item_w,
+            item_h,
+            0.0,
+            0.0,
+            cos_r,
+            sin_r,
+        );
+        if let Ok(path) = contour.build() {
+            window.paint_path(path, color.opacity(0.5));
+        }
     }
 }
 
@@ -323,7 +407,8 @@ pub(crate) fn render_canvas_item(
                     );
                 },
             )
-            .size_full()
+            .w(px(w))
+            .h(px(h))
             .into_any_element()
         } else if let Some(tb) = &item.text {
             let font_px = (tb.font_size_pt.clamp(6.0, 300.0) * (paper_dpi.max(72) as f32 / 72.0)
@@ -692,45 +777,72 @@ pub(crate) fn render_canvas_item(
             )
         });
 
-    // Outline / Selection ring (locked to outer's resolved edges via inset(-2px))
+    // Outline / Selection ring (vector PathBuilder explicitly sized to exact integer bounds;
+    // rotates with shapes, follows rounded corners / ovals / Line, and hugs non-rect contours)
     if is_selected {
         let ring_color = if is_locked {
             cx.theme().muted_foreground
         } else {
             cx.theme().primary
         };
-        let use_vector_ring = !is_oval && item.corner_radius <= 0.0;
-        if use_vector_ring {
-            outer = outer.child(
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, (), window, _| {
-                        paint_dashed_selection_box(bounds, ring_color, window);
-                    },
-                )
-                .absolute()
-                .inset(px(-2.0)),
-            );
+        let shape_kind_opt = if is_freeform {
+            item.shape.as_ref().map(|s| s.kind)
         } else {
-            outer = outer.child(
-                div()
-                    .absolute()
-                    .inset(px(-2.0))
-                    .border_2()
-                    .border_dashed()
-                    .border_color(ring_color)
-                    .when(is_oval, |d| d.rounded(px((w + 4.0).max(h + 4.0))))
-                    .when(!is_oval && item.corner_radius > 0.0, |d| {
-                        d.rounded(px(item.corner_radius * display_scale + 2.0))
-                    }),
-            );
-        }
+            None
+        };
+        let corner_disp = if !is_oval && item.corner_radius > 0.0 {
+            item.corner_radius * display_scale
+        } else {
+            0.0
+        };
+        let stroke_disp = item
+            .shape
+            .as_ref()
+            .map(|s| s.stroke_width * display_scale)
+            .unwrap_or(0.0);
+        let rot_deg = if is_shape { item.rotation_deg } else { 0.0 };
+
+        outer = outer.child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, (), window, _| {
+                    paint_dashed_selection_outline(
+                        bounds,
+                        shape_kind_opt,
+                        corner_disp,
+                        stroke_disp,
+                        rot_deg,
+                        is_oval,
+                        ring_color,
+                        window,
+                    );
+                },
+            )
+            .absolute()
+            .left(px(-2.0))
+            .top(px(-2.0))
+            .w(px(w + 4.0))
+            .h(px(h + 4.0)),
+        );
 
         if is_primary_selected && is_freeform && !is_locked && !is_editing_inline {
             let corner_sz = 10.0f32;
-            let corner_off = -corner_sz * 0.5;
             let primary = cx.theme().primary;
             let mut handles: Vec<AnyElement> = Vec::with_capacity(8);
+            let is_line = shape_kind_opt == Some(FreeformShapeKind::Line);
+            let is_rotated = rot_deg.abs() > 0.01;
+            let rad = rot_deg.to_radians();
+            let cos_r = rad.cos();
+            let sin_r = rad.sin();
+            let cx_loc = w * 0.5;
+            let cy_loc = h * 0.5;
+            let placed_pos = |lx: f32, ly: f32, hw: f32, hh: f32| -> (f32, f32) {
+                let dx = lx - cx_loc;
+                let dy = ly - cy_loc;
+                let rx = cx_loc + dx * cos_r - dy * sin_r;
+                let ry = cy_loc + dx * sin_r + dy * cos_r;
+                ((rx - hw * 0.5).round(), (ry - hh * 0.5).round())
+            };
 
             let mut push_handle = |handle: ResizeHandle,
                                    handle_div: gpui_kit::Stateful<gpui_kit::Div>| {
@@ -769,114 +881,148 @@ pub(crate) fn render_canvas_item(
                 );
             };
 
-            // 4 corner handles
-            push_handle(
-                ResizeHandle::TopLeft,
-                div()
-                    .id(("resize-tl", id))
-                    .absolute()
-                    .left(px(corner_off))
-                    .top(px(corner_off))
-                    .w(px(corner_sz))
-                    .h(px(corner_sz))
-                    .rounded_full()
-                    .cursor_nwse_resize(),
-            );
-            push_handle(
-                ResizeHandle::TopRight,
-                div()
-                    .id(("resize-tr", id))
-                    .absolute()
-                    .right(px(corner_off))
-                    .top(px(corner_off))
-                    .w(px(corner_sz))
-                    .h(px(corner_sz))
-                    .rounded_full()
-                    .cursor_nesw_resize(),
-            );
-            push_handle(
-                ResizeHandle::BottomLeft,
-                div()
-                    .id(("resize-bl", id))
-                    .absolute()
-                    .left(px(corner_off))
-                    .bottom(px(corner_off))
-                    .w(px(corner_sz))
-                    .h(px(corner_sz))
-                    .rounded_full()
-                    .cursor_nesw_resize(),
-            );
-            push_handle(
-                ResizeHandle::BottomRight,
-                div()
-                    .id(("resize-br", id))
-                    .absolute()
-                    .right(px(corner_off))
-                    .bottom(px(corner_off))
-                    .w(px(corner_sz))
-                    .h(px(corner_sz))
-                    .rounded_full()
-                    .cursor_nwse_resize(),
-            );
-
-            // 4 side pill handles when box is wide/tall enough to stay uncluttered
-            if w >= 36.0 {
-                let pill_w = 14.0f32;
-                let pill_h = 6.0f32;
-                let mid_x = (w - pill_w) * 0.5;
-                push_handle(
-                    ResizeHandle::Top,
-                    div()
-                        .id(("resize-t", id))
-                        .absolute()
-                        .left(px(mid_x))
-                        .top(px(-pill_h * 0.5))
-                        .w(px(pill_w))
-                        .h(px(pill_h))
-                        .rounded_full()
-                        .cursor_ns_resize(),
-                );
-                push_handle(
-                    ResizeHandle::Bottom,
-                    div()
-                        .id(("resize-b", id))
-                        .absolute()
-                        .left(px(mid_x))
-                        .bottom(px(-pill_h * 0.5))
-                        .w(px(pill_w))
-                        .h(px(pill_h))
-                        .rounded_full()
-                        .cursor_ns_resize(),
-                );
-            }
-            if h >= 36.0 {
-                let pill_w = 6.0f32;
-                let pill_h = 14.0f32;
-                let mid_y = (h - pill_h) * 0.5;
+            if is_line {
+                // Line shape: 2 endpoint handles rotating with the line
+                let (lx, ly) = placed_pos(0.0, cy_loc, corner_sz, corner_sz);
                 push_handle(
                     ResizeHandle::Left,
                     div()
                         .id(("resize-l", id))
                         .absolute()
-                        .left(px(-pill_w * 0.5))
-                        .top(px(mid_y))
-                        .w(px(pill_w))
-                        .h(px(pill_h))
+                        .left(px(lx))
+                        .top(px(ly))
+                        .w(px(corner_sz))
+                        .h(px(corner_sz))
                         .rounded_full()
                         .cursor_ew_resize(),
                 );
+                let (rx, ry) = placed_pos(w, cy_loc, corner_sz, corner_sz);
                 push_handle(
                     ResizeHandle::Right,
                     div()
                         .id(("resize-r", id))
                         .absolute()
-                        .right(px(-pill_w * 0.5))
-                        .top(px(mid_y))
-                        .w(px(pill_w))
-                        .h(px(pill_h))
+                        .left(px(rx))
+                        .top(px(ry))
+                        .w(px(corner_sz))
+                        .h(px(corner_sz))
                         .rounded_full()
                         .cursor_ew_resize(),
                 );
+            } else {
+                // 4 corner handles (rotated around center when shape is rotated)
+                let (tl_x, tl_y) = placed_pos(0.0, 0.0, corner_sz, corner_sz);
+                push_handle(
+                    ResizeHandle::TopLeft,
+                    div()
+                        .id(("resize-tl", id))
+                        .absolute()
+                        .left(px(tl_x))
+                        .top(px(tl_y))
+                        .w(px(corner_sz))
+                        .h(px(corner_sz))
+                        .rounded_full()
+                        .cursor_nwse_resize(),
+                );
+                let (tr_x, tr_y) = placed_pos(w, 0.0, corner_sz, corner_sz);
+                push_handle(
+                    ResizeHandle::TopRight,
+                    div()
+                        .id(("resize-tr", id))
+                        .absolute()
+                        .left(px(tr_x))
+                        .top(px(tr_y))
+                        .w(px(corner_sz))
+                        .h(px(corner_sz))
+                        .rounded_full()
+                        .cursor_nesw_resize(),
+                );
+                let (bl_x, bl_y) = placed_pos(0.0, h, corner_sz, corner_sz);
+                push_handle(
+                    ResizeHandle::BottomLeft,
+                    div()
+                        .id(("resize-bl", id))
+                        .absolute()
+                        .left(px(bl_x))
+                        .top(px(bl_y))
+                        .w(px(corner_sz))
+                        .h(px(corner_sz))
+                        .rounded_full()
+                        .cursor_nesw_resize(),
+                );
+                let (br_x, br_y) = placed_pos(w, h, corner_sz, corner_sz);
+                push_handle(
+                    ResizeHandle::BottomRight,
+                    div()
+                        .id(("resize-br", id))
+                        .absolute()
+                        .left(px(br_x))
+                        .top(px(br_y))
+                        .w(px(corner_sz))
+                        .h(px(corner_sz))
+                        .rounded_full()
+                        .cursor_nwse_resize(),
+                );
+
+                // 4 side handles (pills when unrotated, compact dots when rotated)
+                if w >= 36.0 {
+                    let (pw, ph) = if is_rotated { (8.0, 8.0) } else { (14.0, 6.0) };
+                    let (tx, ty) = placed_pos(cx_loc, 0.0, pw, ph);
+                    push_handle(
+                        ResizeHandle::Top,
+                        div()
+                            .id(("resize-t", id))
+                            .absolute()
+                            .left(px(tx))
+                            .top(px(ty))
+                            .w(px(pw))
+                            .h(px(ph))
+                            .rounded_full()
+                            .cursor_ns_resize(),
+                    );
+                    let (bx, by) = placed_pos(cx_loc, h, pw, ph);
+                    push_handle(
+                        ResizeHandle::Bottom,
+                        div()
+                            .id(("resize-b", id))
+                            .absolute()
+                            .left(px(bx))
+                            .top(px(by))
+                            .w(px(pw))
+                            .h(px(ph))
+                            .rounded_full()
+                            .cursor_ns_resize(),
+                    );
+                }
+                if h >= 36.0 {
+                    let (pw, ph) = if is_rotated { (8.0, 8.0) } else { (6.0, 14.0) };
+                    let (lx, ly) = placed_pos(0.0, cy_loc, pw, ph);
+                    push_handle(
+                        ResizeHandle::Left,
+                        div()
+                            .id(("resize-l", id))
+                            .absolute()
+                            .left(px(lx))
+                            .top(px(ly))
+                            .w(px(pw))
+                            .h(px(ph))
+                            .rounded_full()
+                            .cursor_ew_resize(),
+                    );
+                    let (rx, ry) = placed_pos(w, cy_loc, pw, ph);
+                    push_handle(
+                        ResizeHandle::Right,
+                        div()
+                            .id(("resize-r", id))
+                            .absolute()
+                            .left(px(rx))
+                            .top(px(ry))
+                            .w(px(pw))
+                            .h(px(ph))
+                            .rounded_full()
+                            .cursor_ew_resize(),
+                    );
+                }
             }
             outer = outer.children(handles);
         }

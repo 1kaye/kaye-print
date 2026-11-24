@@ -151,6 +151,164 @@ fn paint_snap_guides(
     }
 }
 
+/// Computes new `(x, y, w, h)` in sheet pixels for any of the 8 resize handles.
+/// Preserves aspect ratio across ALL handles (corners AND edges) when `keep_aspect` is true,
+/// projects pointer deltas onto the item's rotated local frame when `rotation_deg != 0`,
+/// and keeps the anchored opposite edge/corner fixed inside the paper's safe printable bounds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_resized_rect(
+    handle: ResizeHandle,
+    orig_x: f32,
+    orig_y: f32,
+    orig_w: f32,
+    orig_h: f32,
+    dx_world: f32,
+    dy_world: f32,
+    rotation_deg: f32,
+    keep_aspect: bool,
+    printable_bounds: (f32, f32, f32, f32),
+) -> (f32, f32, f32, f32) {
+    let (ml, mt, pw, ph) = printable_bounds;
+    let min_sz = 32.0f32;
+    let aspect = (orig_h / orig_w.max(1.0)).max(1e-4);
+
+    let rad = rotation_deg.to_radians();
+    let cos_r = rad.cos();
+    let sin_r = rad.sin();
+
+    // Project pointer drag delta onto the item's rotated local axes.
+    let dw = dx_world * cos_r + dy_world * sin_r;
+    let dh = -dx_world * sin_r + dy_world * cos_r;
+
+    let min_w_aspect = min_sz.max(min_sz / aspect);
+    let min_h_aspect = min_sz.max(min_sz * aspect);
+
+    // Raw candidate size & local anchor sign (-1 = anchor at right/bottom, +1 = anchor at left/top, 0 = centered)
+    let (mut nw, mut nh, anchor_x, anchor_y): (f32, f32, f32, f32) = match handle {
+        ResizeHandle::Right => {
+            if keep_aspect {
+                let w = (orig_w + dw).max(min_w_aspect);
+                (w, w * aspect, 1.0, 0.0)
+            } else {
+                ((orig_w + dw).max(min_sz), orig_h, 1.0, 0.0)
+            }
+        }
+        ResizeHandle::Left => {
+            if keep_aspect {
+                let w = (orig_w - dw).max(min_w_aspect);
+                (w, w * aspect, -1.0, 0.0)
+            } else {
+                ((orig_w - dw).max(min_sz), orig_h, -1.0, 0.0)
+            }
+        }
+        ResizeHandle::Bottom => {
+            if keep_aspect {
+                let h = (orig_h + dh).max(min_h_aspect);
+                (h / aspect, h, 0.0, 1.0)
+            } else {
+                (orig_w, (orig_h + dh).max(min_sz), 0.0, 1.0)
+            }
+        }
+        ResizeHandle::Top => {
+            if keep_aspect {
+                let h = (orig_h - dh).max(min_h_aspect);
+                (h / aspect, h, 0.0, -1.0)
+            } else {
+                (orig_w, (orig_h - dh).max(min_sz), 0.0, -1.0)
+            }
+        }
+        ResizeHandle::BottomRight => {
+            if keep_aspect {
+                let scale_w = (orig_w + dw) / orig_w.max(1.0);
+                let scale_h = (orig_h + dh) / orig_h.max(1.0);
+                let s = if dw.abs() >= dh.abs() { scale_w } else { scale_h };
+                let w = (orig_w * s).max(min_w_aspect);
+                (w, w * aspect, 1.0, 1.0)
+            } else {
+                ((orig_w + dw).max(min_sz), (orig_h + dh).max(min_sz), 1.0, 1.0)
+            }
+        }
+        ResizeHandle::TopLeft => {
+            if keep_aspect {
+                let scale_w = (orig_w - dw) / orig_w.max(1.0);
+                let scale_h = (orig_h - dh) / orig_h.max(1.0);
+                let s = if dw.abs() >= dh.abs() { scale_w } else { scale_h };
+                let w = (orig_w * s).max(min_w_aspect);
+                (w, w * aspect, -1.0, -1.0)
+            } else {
+                ((orig_w - dw).max(min_sz), (orig_h - dh).max(min_sz), -1.0, -1.0)
+            }
+        }
+        ResizeHandle::TopRight => {
+            if keep_aspect {
+                let scale_w = (orig_w + dw) / orig_w.max(1.0);
+                let scale_h = (orig_h - dh) / orig_h.max(1.0);
+                let s = if dw.abs() >= dh.abs() { scale_w } else { scale_h };
+                let w = (orig_w * s).max(min_w_aspect);
+                (w, w * aspect, 1.0, -1.0)
+            } else {
+                ((orig_w + dw).max(min_sz), (orig_h - dh).max(min_sz), 1.0, -1.0)
+            }
+        }
+        ResizeHandle::BottomLeft => {
+            if keep_aspect {
+                let scale_w = (orig_w - dw) / orig_w.max(1.0);
+                let scale_h = (orig_h + dh) / orig_h.max(1.0);
+                let s = if dw.abs() >= dh.abs() { scale_w } else { scale_h };
+                let w = (orig_w * s).max(min_w_aspect);
+                (w, w * aspect, -1.0, 1.0)
+            } else {
+                ((orig_w - dw).max(min_sz), (orig_h + dh).max(min_sz), -1.0, 1.0)
+            }
+        }
+    };
+
+    // For axis-aligned items, clamp against distance from the anchored edge to the safe margin
+    // so dragging past a margin stops cleanly without sliding the anchored edge or breaking ratio.
+    if rotation_deg.abs() < 0.01 {
+        let max_w = if anchor_x > 0.0 {
+            (ml + pw - orig_x).max(min_sz)
+        } else if anchor_x < 0.0 {
+            (orig_x + orig_w - ml).max(min_sz)
+        } else {
+            pw.max(min_sz)
+        };
+        let max_h = if anchor_y > 0.0 {
+            (mt + ph - orig_y).max(min_sz)
+        } else if anchor_y < 0.0 {
+            (orig_y + orig_h - mt).max(min_sz)
+        } else {
+            ph.max(min_sz)
+        };
+        if keep_aspect {
+            let cap = (max_w / nw.max(1.0)).min(max_h / nh.max(1.0)).min(1.0);
+            nw *= cap;
+            nh *= cap;
+        } else {
+            nw = nw.min(max_w);
+            nh = nh.min(max_h);
+        }
+    } else if keep_aspect {
+        let cap = (pw / nw.max(1.0)).min(ph / nh.max(1.0)).min(1.0);
+        nw *= cap;
+        nh *= cap;
+    } else {
+        nw = nw.min(pw.max(min_sz));
+        nh = nh.min(ph.max(min_sz));
+    }
+
+    let dcx_local = anchor_x * (nw - orig_w) * 0.5;
+    let dcy_local = anchor_y * (nh - orig_h) * 0.5;
+    let orig_cx = orig_x + orig_w * 0.5;
+    let orig_cy = orig_y + orig_h * 0.5;
+    let new_cx = orig_cx + dcx_local * cos_r - dcy_local * sin_r;
+    let new_cy = orig_cy + dcx_local * sin_r + dcy_local * cos_r;
+    let nx = new_cx - nw * 0.5;
+    let ny = new_cy - nh * 0.5;
+
+    (nx, ny, nw, nh)
+}
+
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (
@@ -755,8 +913,8 @@ impl Render for CanvasView {
                             } => {
                                 let paper = this.app.read(cx).state.paper.clone();
                                 let scale = this.display_scale(&paper).max(0.01);
-                                let dw = (mx - start_mx) / scale;
-                                let dh = (my - start_my) / scale;
+                                let dx_world = (mx - start_mx) / scale;
+                                let dy_world = (my - start_my) / scale;
                                 let shift_lock = ev.modifiers.shift;
                                 let push_undo = !this.drag_undo_pushed;
                                 if push_undo {
@@ -767,75 +925,24 @@ impl Render for CanvasView {
                                         app.state.push_freeform_undo();
                                     }
                                     if let Some(item) = app.state.find_item_mut(id) {
-                                        let min_sz = 32.0f32;
-                                        let aspect = orig_h / orig_w.max(1.0);
-                                        let is_corner = matches!(
+                                        let keep_aspect = item.lock_aspect || shift_lock;
+                                        let rot_deg = if item.is_shape() {
+                                            item.rotation_deg
+                                        } else {
+                                            0.0
+                                        };
+                                        let (nx, ny, nw, nh) = compute_resized_rect(
                                             handle,
-                                            ResizeHandle::TopLeft
-                                                | ResizeHandle::TopRight
-                                                | ResizeHandle::BottomLeft
-                                                | ResizeHandle::BottomRight
+                                            orig_x,
+                                            orig_y,
+                                            orig_w,
+                                            orig_h,
+                                            dx_world,
+                                            dy_world,
+                                            rot_deg,
+                                            keep_aspect,
+                                            paper.printable_bounds_px(),
                                         );
-                                        let keep_aspect = is_corner && (item.lock_aspect || shift_lock);
-
-                                        let mut nx = orig_x;
-                                        let mut ny = orig_y;
-                                        let mut nw = orig_w;
-                                        let mut nh = orig_h;
-
-                                        match handle {
-                                            ResizeHandle::Right => {
-                                                nw = (orig_w + dw).max(min_sz);
-                                            }
-                                            ResizeHandle::Left => {
-                                                nw = (orig_w - dw).max(min_sz);
-                                                nx = orig_x + (orig_w - nw);
-                                            }
-                                            ResizeHandle::Bottom => {
-                                                nh = (orig_h + dh).max(min_sz);
-                                            }
-                                            ResizeHandle::Top => {
-                                                nh = (orig_h - dh).max(min_sz);
-                                                ny = orig_y + (orig_h - nh);
-                                            }
-                                            ResizeHandle::BottomRight => {
-                                                nw = (orig_w + dw).max(min_sz);
-                                                nh = if keep_aspect {
-                                                    (nw * aspect).max(min_sz)
-                                                } else {
-                                                    (orig_h + dh).max(min_sz)
-                                                };
-                                            }
-                                            ResizeHandle::TopLeft => {
-                                                nw = (orig_w - dw).max(min_sz);
-                                                nh = if keep_aspect {
-                                                    (nw * aspect).max(min_sz)
-                                                } else {
-                                                    (orig_h - dh).max(min_sz)
-                                                };
-                                                nx = orig_x + (orig_w - nw);
-                                                ny = orig_y + (orig_h - nh);
-                                            }
-                                            ResizeHandle::TopRight => {
-                                                nw = (orig_w + dw).max(min_sz);
-                                                nh = if keep_aspect {
-                                                    (nw * aspect).max(min_sz)
-                                                } else {
-                                                    (orig_h - dh).max(min_sz)
-                                                };
-                                                ny = orig_y + (orig_h - nh);
-                                            }
-                                            ResizeHandle::BottomLeft => {
-                                                nw = (orig_w - dw).max(min_sz);
-                                                nh = if keep_aspect {
-                                                    (nw * aspect).max(min_sz)
-                                                } else {
-                                                    (orig_h + dh).max(min_sz)
-                                                };
-                                                nx = orig_x + (orig_w - nw);
-                                            }
-                                        }
-
                                         item.x_px = nx;
                                         item.y_px = ny;
                                         item.width_px = nw;
@@ -914,7 +1021,10 @@ impl Render for CanvasView {
                                         },
                                     )
                                     .absolute()
-                                    .inset_0(),
+                                    .left_0()
+                                    .top_0()
+                                    .w(px(disp_paper_w))
+                                    .h(px(disp_paper_h)),
                                 )
                             })
                             // Safe Print Margin Boundary Box
@@ -947,7 +1057,10 @@ impl Render for CanvasView {
                                         },
                                     )
                                     .absolute()
-                                    .inset_0(),
+                                    .left_0()
+                                    .top_0()
+                                    .w(px(disp_paper_w))
+                                    .h(px(disp_paper_h)),
                                 )
                             }),
                     )
@@ -1013,5 +1126,128 @@ impl Render for CanvasView {
                         ),
                 ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_resized_rect_locks_aspect_on_all_handles() {
+        let bounds = (100.0, 100.0, 2000.0, 3000.0);
+        let orig_ratio = 200.0 / 400.0; // 1:2 (h/w)
+
+        // Dragging Right handle with lock_aspect=true must scale height proportionally & keep left edge fixed.
+        let (nx, ny, nw, nh) = compute_resized_rect(
+            ResizeHandle::Right,
+            300.0,
+            400.0,
+            400.0,
+            200.0,
+            200.0,
+            0.0,
+            0.0,
+            true,
+            bounds,
+        );
+        assert!((nx - 300.0).abs() < 1e-2, "left edge anchored, got {nx}");
+        assert!((nw - 600.0).abs() < 1e-2);
+        assert!((nh - 300.0).abs() < 1e-2);
+        assert!(((nh / nw) - orig_ratio).abs() < 1e-3);
+        assert!((ny - 350.0).abs() < 1e-2, "centered vertically");
+
+        // Dragging Left handle keeps right edge anchored & preserves ratio.
+        let (lx, _ly, lw, lh) = compute_resized_rect(
+            ResizeHandle::Left,
+            300.0,
+            400.0,
+            400.0,
+            200.0,
+            -100.0,
+            0.0,
+            0.0,
+            true,
+            bounds,
+        );
+        assert!(((lx + lw) - 700.0).abs() < 1e-2, "right edge anchored");
+        assert!(((lh / lw) - orig_ratio).abs() < 1e-3);
+
+        // Dragging Bottom handle scales width proportionally & keeps top edge fixed.
+        let (bx, by, bw, bh) = compute_resized_rect(
+            ResizeHandle::Bottom,
+            300.0,
+            400.0,
+            400.0,
+            200.0,
+            0.0,
+            100.0,
+            0.0,
+            true,
+            bounds,
+        );
+        assert!((by - 400.0).abs() < 1e-2, "top edge anchored");
+        assert!((bh - 300.0).abs() < 1e-2);
+        assert!((bw - 600.0).abs() < 1e-2);
+        assert!((bx - 200.0).abs() < 1e-2, "centered horizontally");
+
+        // Dragging Top handle keeps bottom edge anchored & preserves ratio.
+        let (_tx, ty, tw, th) = compute_resized_rect(
+            ResizeHandle::Top,
+            300.0,
+            400.0,
+            400.0,
+            200.0,
+            0.0,
+            -50.0,
+            0.0,
+            true,
+            bounds,
+        );
+        assert!(((ty + th) - 600.0).abs() < 1e-2, "bottom edge anchored");
+        assert!(((th / tw) - orig_ratio).abs() < 1e-3);
+
+        // Dragging Right with lock_aspect=false stretches width only.
+        let (ux, uy, uw, uh) = compute_resized_rect(
+            ResizeHandle::Right,
+            300.0,
+            400.0,
+            400.0,
+            200.0,
+            150.0,
+            0.0,
+            0.0,
+            false,
+            bounds,
+        );
+        assert!((ux - 300.0).abs() < 1e-2);
+        assert!((uy - 400.0).abs() < 1e-2);
+        assert!((uw - 550.0).abs() < 1e-2);
+        assert!((uh - 200.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn test_compute_resized_rect_projects_rotated_shape_delta() {
+        let bounds = (0.0, 0.0, 2000.0, 2000.0);
+        // Rotated 90 deg CW: local Right points straight down (+Y). Dragging down +100 grows width by +100.
+        let (nx, ny, nw, nh) = compute_resized_rect(
+            ResizeHandle::Right,
+            500.0,
+            500.0,
+            200.0,
+            100.0,
+            0.0,
+            100.0,
+            90.0,
+            false,
+            bounds,
+        );
+        assert!((nw - 300.0).abs() < 1e-2);
+        assert!((nh - 100.0).abs() < 1e-2);
+        // Center shifted +50 down in world Y, X unchanged
+        let orig_cx = 600.0;
+        let orig_cy = 550.0;
+        assert!(((nx + nw * 0.5) - orig_cx).abs() < 1e-2);
+        assert!(((ny + nh * 0.5) - (orig_cy + 50.0)).abs() < 1e-2);
     }
 }
