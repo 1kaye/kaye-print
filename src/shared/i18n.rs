@@ -275,5 +275,30 @@ mod tests {
             Language::Eng.added_id_photos(2, 3.0, 4.0).as_ref(),
             "+2 ID photo(s) (3.0×4.0 cm)"
         );
+        for key in [
+            "app.shape_line",
+            "app.undo_tooltip",
+            "app.redo_tooltip",
+            "app.snap_grid_tooltip",
+            "app.opacity",
+            "app.stroke_enable",
+            "app.rotation",
+            "app.text_style",
+            "app.line_height",
+            "app.align_top_tooltip",
+            "app.align_bottom_tooltip",
+            "app.align_dist_v_tooltip",
+            "app.ctx_bring_to_front",
+            "app.ctx_send_to_back",
+            "app.ctx_lock_layer",
+            "app.ctx_unlock_layer",
+            "app.layer_hide_tooltip",
+            "app.layer_show_tooltip",
+        ] {
+            for lang in Language::ALL {
+                let resolved = lang.tr(key);
+                assert!(!resolved.is_empty() && resolved.as_ref() != key, "missing {key}");
+            }
+        }
     }
 }

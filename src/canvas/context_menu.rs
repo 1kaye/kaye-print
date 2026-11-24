@@ -32,6 +32,7 @@ fn menu_item_with_kbd(
     .icon(icon)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_item_popup_menu(
     menu: PopupMenu,
     item_id: u64,
@@ -39,6 +40,7 @@ pub(crate) fn build_item_popup_menu(
     is_text: bool,
     has_image: bool,
     has_edit: bool,
+    is_locked: bool,
     lang: Language,
     app_entity: Entity<StudioApp>,
 ) -> PopupMenu {
@@ -146,7 +148,65 @@ pub(crate) fn build_item_popup_menu(
     }
 
     let can_duplicate = mode != LayoutMode::FullImage;
-    let can_delete = mode != LayoutMode::FullImage || has_image;
+    let can_delete = (mode != LayoutMode::FullImage || has_image) && !is_locked;
+    if mode == LayoutMode::Freeform {
+        if has_top_section {
+            menu = menu.separator();
+        }
+        has_top_section = true;
+        menu = menu
+            .item(
+                PopupMenuItem::new(lang.tr("app.ctx_bring_to_front"))
+                    .icon(IconName::ArrowUp)
+                    .on_click({
+                        let app = app_entity.clone();
+                        move |_, window, cx| {
+                            app.update(cx, |app, cx| {
+                                app.canvas_focus.focus(window, cx);
+                                app.state.bring_to_front(item_id);
+                                cx.notify();
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(lang.tr("app.ctx_send_to_back"))
+                    .icon(IconName::ArrowDown)
+                    .on_click({
+                        let app = app_entity.clone();
+                        move |_, window, cx| {
+                            app.update(cx, |app, cx| {
+                                app.canvas_focus.focus(window, cx);
+                                app.state.send_to_back(item_id);
+                                cx.notify();
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(if is_locked {
+                    lang.tr("app.ctx_unlock_layer")
+                } else {
+                    lang.tr("app.ctx_lock_layer")
+                })
+                .icon(if is_locked {
+                    IconName::LockOpen
+                } else {
+                    IconName::Lock
+                })
+                .on_click({
+                    let app = app_entity.clone();
+                    move |_, window, cx| {
+                        app.update(cx, |app, cx| {
+                            app.canvas_focus.focus(window, cx);
+                            app.state.toggle_item_locked(item_id);
+                            cx.notify();
+                        });
+                    }
+                }),
+            );
+    }
+
     if has_top_section && (can_duplicate || can_delete) {
         menu = menu.separator();
     }

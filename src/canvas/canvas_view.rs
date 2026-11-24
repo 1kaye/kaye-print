@@ -1,18 +1,21 @@
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    AnyElement, AppContext as _, Bounds, Context, Entity, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    Render, ScrollDelta, ScrollEvent, Styled, Subscription, Window,
+    PathBuilder, Pixels, Render, ScrollDelta, ScrollEvent, Styled, Subscription, Window,
     assets::IconName,
+    canvas,
     component::{
-        ActiveTheme as _, Icon, IndexPath, Sizable as _, Size, Theme, ThemeMode, WindowExt as _,
+        ActiveTheme as _, Disableable as _, Icon, IndexPath, Sizable as _, Size, Theme, ThemeMode,
+        WindowExt as _,
         button::{Button, ButtonVariants as _},
         h_flex,
         select::{SearchableVec, Select, SelectEvent, SelectState},
+        separator::Separator,
         status_bar::StatusBar,
         toolbar::Toolbar,
         v_flex,
     },
-    div,
+    div, point,
     prelude::FluentBuilder as _,
     px, rgb,
 };
@@ -21,10 +24,17 @@ use crate::{
     app::{ActiveRoute, StudioApp, StudioState},
     canvas::{
         item::render_canvas_item,
-        model::{CanvasDrag, ContextMenuState, ImageTransform},
+        model::{CanvasDrag, ContextMenuState, ImageTransform, LayoutMode, ResizeHandle},
     },
-    shared::i18n::Language,
+    inspector::ButtonSelectedExt as _,
+    shared::{i18n::Language, units::mm_to_px},
 };
+
+#[derive(Clone, Copy, Debug)]
+pub enum SnapGuide {
+    Vertical(f32),
+    Horizontal(f32),
+}
 
 struct LanguageSelectState {
     select: Entity<SelectState<SearchableVec<Language>>>,
@@ -36,6 +46,8 @@ pub struct CanvasView {
     pub zoom: f32,
     pub pan: (f32, f32),
     pub drag_state: CanvasDrag,
+    pub drag_undo_pushed: bool,
+    pub active_guides: Vec<SnapGuide>,
     pub pending_text_click: Option<(u64, f32, f32)>,
     prev_editing_text_id: Option<u64>,
     pub context_menu: Option<ContextMenuState>,
@@ -55,6 +67,8 @@ impl CanvasView {
             zoom: 1.0,
             pan: (0.0, 0.0),
             drag_state: CanvasDrag::None,
+            drag_undo_pushed: false,
+            active_guides: Vec::new(),
             pending_text_click: None,
             prev_editing_text_id: None,
             context_menu: None,
@@ -68,15 +82,88 @@ impl CanvasView {
     }
 }
 
+fn paint_paper_grid(
+    bounds: Bounds<Pixels>,
+    margin_disp: f32,
+    step_disp: f32,
+    window: &mut Window,
+) {
+    let ox = f32::from(bounds.origin.x);
+    let oy = f32::from(bounds.origin.y);
+    let bw = f32::from(bounds.size.width);
+    let bh = f32::from(bounds.size.height);
+    if step_disp < 6.0 || bw <= margin_disp * 2.0 || bh <= margin_disp * 2.0 {
+        return;
+    }
+    let x0 = ox + margin_disp;
+    let y0 = oy + margin_disp;
+    let x1 = ox + bw - margin_disp;
+    let y1 = oy + bh - margin_disp;
+    let mut builder = PathBuilder::stroke(px(0.75));
+    let mut x = x0 + step_disp;
+    while x < x1 - 1.0 {
+        builder.move_to(point(px(x.round()), px(y0)));
+        builder.line_to(point(px(x.round()), px(y1)));
+        x += step_disp;
+    }
+    let mut y = y0 + step_disp;
+    while y < y1 - 1.0 {
+        builder.move_to(point(px(x0), px(y.round())));
+        builder.line_to(point(px(x1), px(y.round())));
+        y += step_disp;
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, rgb(0x94A3B8).opacity(0.24));
+    }
+}
+
+fn paint_snap_guides(
+    bounds: Bounds<Pixels>,
+    guides: &[SnapGuide],
+    display_scale: f32,
+    color: gpui_kit::Hsla,
+    window: &mut Window,
+) {
+    if guides.is_empty() {
+        return;
+    }
+    let ox = f32::from(bounds.origin.x);
+    let oy = f32::from(bounds.origin.y);
+    let bw = f32::from(bounds.size.width);
+    let bh = f32::from(bounds.size.height);
+    let mut builder = PathBuilder::stroke(px(1.0)).dash_array(&[px(4.0), px(3.0)]);
+    for guide in guides {
+        match *guide {
+            SnapGuide::Vertical(gx_sheet) => {
+                let x = ox + (gx_sheet * display_scale).round();
+                builder.move_to(point(px(x), px(oy)));
+                builder.line_to(point(px(x), px(oy + bh)));
+            }
+            SnapGuide::Horizontal(gy_sheet) => {
+                let y = oy + (gy_sheet * display_scale).round();
+                builder.move_to(point(px(ox), px(y)));
+                builder.line_to(point(px(ox + bw), px(y)));
+            }
+        }
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (
             paper,
             sidebar_open,
             selected_id,
+            selected_ids,
             editing_text_id,
             mode,
             id_photo_free_move,
+            snap_to_grid,
+            can_undo,
+            can_redo,
             canvas_focus,
             lang,
         ) = {
@@ -85,9 +172,13 @@ impl Render for CanvasView {
                 app.state.paper.clone(),
                 app.state.sidebar_open,
                 app.state.selected_id,
+                app.state.selected_ids.clone(),
                 app.state.editing_text_id,
                 app.state.mode,
                 app.state.id_photo_free_move,
+                app.state.snap_to_grid,
+                app.state.can_undo_freeform(),
+                app.state.can_redo_freeform(),
                 app.canvas_focus.clone(),
                 app.state.language,
             )
@@ -142,10 +233,10 @@ impl Render for CanvasView {
         let surf_center_y = surf_h * 0.5;
 
         let display_scale = self.display_scale(&paper);
-        let disp_paper_w = (paper_w_px * display_scale).max(80.0);
-        let disp_paper_h = (paper_h_px * display_scale).max(80.0);
-        let paper_left = surf_center_x - disp_paper_w * 0.5 + pan_x;
-        let paper_top = surf_center_y - disp_paper_h * 0.5 + pan_y;
+        let disp_paper_w = (paper_w_px * display_scale).round().max(80.0);
+        let disp_paper_h = (paper_h_px * display_scale).round().max(80.0);
+        let paper_left = (surf_center_x - disp_paper_w * 0.5 + pan_x).round();
+        let paper_top = (surf_center_y - disp_paper_h * 0.5 + pan_y).round();
 
         let focus_inline_id = editing_text_id.filter(|&id| self.prev_editing_text_id != Some(id));
         self.prev_editing_text_id = editing_text_id;
@@ -153,11 +244,15 @@ impl Render for CanvasView {
         let items = self.app.read(cx).state.active_items().to_vec();
         let mut rendered_items: Vec<AnyElement> = Vec::with_capacity(items.len());
         for item in &items {
+            if mode == LayoutMode::Freeform && !item.visible {
+                continue;
+            }
             rendered_items.push(render_canvas_item(
                 item,
                 display_scale,
                 paper.dpi,
                 selected_id,
+                &selected_ids,
                 editing_text_id,
                 focus_inline_id == Some(item.id),
                 mode,
@@ -169,6 +264,12 @@ impl Render for CanvasView {
                 cx,
             ));
         }
+
+        let is_freeform = mode == LayoutMode::Freeform;
+        let active_guides = self.active_guides.clone();
+        let guide_color = cx.theme().primary;
+        let grid_step_disp = mm_to_px(5.0, paper.dpi) * display_scale;
+        let margin_disp = (margin_px * display_scale).round();
 
         v_flex()
             .flex_1()
@@ -214,7 +315,58 @@ impl Render for CanvasView {
                                         });
                                         cx.notify();
                                     })),
-                            ),
+                            )
+                            .when(is_freeform, |tb| {
+                                tb.content(Separator::vertical().h(px(16.0)).mx_1())
+                                    .child(
+                                        Button::new("btn-freeform-undo")
+                                            .ghost()
+                                            .with_size(Size::Medium)
+                                            .disabled(!can_undo)
+                                            .icon(Icon::new(IconName::Undo2).with_size(Size::Medium))
+                                            .tooltip(lang.tr("app.undo_tooltip"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.app.update(cx, |app, cx| {
+                                                    if app.state.undo_freeform() {
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("btn-freeform-redo")
+                                            .ghost()
+                                            .with_size(Size::Medium)
+                                            .disabled(!can_redo)
+                                            .icon(Icon::new(IconName::Redo2).with_size(Size::Medium))
+                                            .tooltip(lang.tr("app.redo_tooltip"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.app.update(cx, |app, cx| {
+                                                    if app.state.redo_freeform() {
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            })),
+                                    )
+                                    .content(Separator::vertical().h(px(16.0)).mx_1())
+                                    .child(
+                                        Button::new("btn-freeform-grid")
+                                            .ghost()
+                                            .with_size(Size::Medium)
+                                            .neutral_selected(snap_to_grid, cx)
+                                            .icon(
+                                                Icon::new(IconName::LayoutDashboard)
+                                                    .with_size(Size::Medium),
+                                            )
+                                            .tooltip(lang.tr("app.snap_grid_tooltip"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.app.update(cx, |app, cx| {
+                                                    app.state.snap_to_grid = !app.state.snap_to_grid;
+                                                    cx.notify();
+                                                });
+                                            })),
+                                    )
+                            }),
                     )
                     .child(
                         Toolbar::new("canvas-theme-toolbar")
@@ -268,7 +420,7 @@ impl Render for CanvasView {
                         cx.theme().muted
                     })
                     .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window: &mut Window, cx| {
-                        let (is_workspace, no_modal_state, selected_id) = {
+                        let (is_workspace, no_modal_state, selected_id, cur_mode, dpi) = {
                             let app = this.app.read(cx);
                             (
                                 matches!(app.state.route, ActiveRoute::Workspace),
@@ -276,40 +428,103 @@ impl Render for CanvasView {
                                     && app.state.editing_layer_id.is_none()
                                     && app.state.editing_text_id.is_none(),
                                 app.state.selected_id,
+                                app.state.mode,
+                                app.state.paper.dpi,
                             )
                         };
                         if !is_workspace || !no_modal_state || window.has_active_dialog(cx) {
                             return;
                         }
 
+                        let key = ev.keystroke.key.to_ascii_lowercase();
+                        let mods = &ev.keystroke.modifiers;
+                        let accel = mods.control || mods.platform;
+
+                        // Global Freeform shortcuts that work even without active selection
+                        if cur_mode == LayoutMode::Freeform {
+                            if key == "z" && accel && !mods.alt {
+                                this.app.update(cx, |app, cx| {
+                                    let changed = if mods.shift {
+                                        app.state.redo_freeform()
+                                    } else {
+                                        app.state.undo_freeform()
+                                    };
+                                    if changed {
+                                        cx.notify();
+                                    }
+                                });
+                                return;
+                            }
+                            if key == "y" && accel && !mods.alt && !mods.shift {
+                                this.app.update(cx, |app, cx| {
+                                    if app.state.redo_freeform() {
+                                        cx.notify();
+                                    }
+                                });
+                                return;
+                            }
+                            if key == "a" && accel && !mods.alt && !mods.shift {
+                                this.app.update(cx, |app, cx| {
+                                    app.state.select_all_freeform();
+                                    cx.notify();
+                                });
+                                return;
+                            }
+                        }
+
+                        if key == "escape" && !accel && !mods.alt {
+                            this.app.update(cx, |app, cx| {
+                                app.state.select_single(None);
+                                cx.notify();
+                            });
+                            return;
+                        }
+
                         let Some(id) = selected_id else {
                             return;
                         };
-                        let key = ev.keystroke.key.to_ascii_lowercase();
-                        let mods = &ev.keystroke.modifiers;
 
-                        if key == "delete" && !mods.control && !mods.alt && !mods.platform {
-                            this.app.update(cx, |app, cx| {
-                                app.state.delete_item(id);
-                                cx.notify();
-                            });
-                        } else if key == "c"
-                            && (mods.control || mods.platform)
+                        // Arrow key nudging (1mm default, 5mm with Shift)
+                        let nudge_step = mm_to_px(if mods.shift { 5.0 } else { 1.0 }, dpi);
+                        if !accel && !mods.alt {
+                            let delta = match key.as_str() {
+                                "up" => Some((0.0, -nudge_step)),
+                                "down" => Some((0.0, nudge_step)),
+                                "left" => Some((-nudge_step, 0.0)),
+                                "right" => Some((nudge_step, 0.0)),
+                                _ => None,
+                            };
+                            if let Some((dx, dy)) = delta {
+                                this.app.update(cx, |app, cx| {
+                                    if app.state.nudge_selected(dx, dy) {
+                                        cx.notify();
+                                    }
+                                });
+                                return;
+                            }
+                        }
+
+                        if (key == "delete" || key == "backspace")
+                            && !accel
                             && !mods.alt
-                            && !mods.shift
                         {
                             this.app.update(cx, |app, cx| {
-                                app.state.duplicate_item(id);
+                                app.state.delete_selected();
+                                cx.notify();
+                            });
+                        } else if (key == "c" || key == "d") && accel && !mods.alt && !mods.shift {
+                            this.app.update(cx, |app, cx| {
+                                app.state.duplicate_selected();
                                 cx.notify();
                             });
                         } else if key == "r" {
-                            if (mods.control || mods.platform) && !mods.shift && !mods.alt {
+                            if accel && !mods.shift && !mods.alt {
                                 this.app.update(cx, |app, cx| {
                                     if app.state.reset_item_transform(id) {
                                         cx.notify();
                                     }
                                 });
-                            } else if mods.shift && !mods.control && !mods.alt && !mods.platform {
+                            } else if mods.shift && !accel && !mods.alt {
                                 this.app.update(cx, |app, cx| {
                                     if app
                                         .state
@@ -318,7 +533,7 @@ impl Render for CanvasView {
                                         cx.notify();
                                     }
                                 });
-                            } else if !mods.shift && !mods.control && !mods.alt && !mods.platform {
+                            } else if !mods.shift && !accel && !mods.alt {
                                 this.app.update(cx, |app, cx| {
                                     if app
                                         .state
@@ -376,10 +591,11 @@ impl Render for CanvasView {
                             this.pending_text_click = None;
                             this.app.update(cx, |app, cx| {
                                 app.state.context_menu = None;
-                                app.state.selected_id = None;
+                                app.state.select_single(None);
                                 app.state.editing_text_id = None;
                                 cx.notify();
                             });
+                            this.active_guides.clear();
                             this.drag_state = CanvasDrag::PanCanvas {
                                 start_mx: f32::from(ev.position.x),
                                 start_my: f32::from(ev.position.y),
@@ -395,7 +611,8 @@ impl Render for CanvasView {
                         }
                         let mx = f32::from(ev.position.x);
                         let my = f32::from(ev.position.y);
-                        match this.drag_state {
+                        let drag_snapshot = this.drag_state.clone();
+                        match drag_snapshot {
                             CanvasDrag::None => {}
                             CanvasDrag::PanCanvas {
                                 start_mx,
@@ -407,35 +624,132 @@ impl Render for CanvasView {
                                 this.pan.1 = orig_pan_y + (my - start_my);
                                 cx.notify();
                             }
-                            CanvasDrag::MoveItem {
-                                id,
+                            CanvasDrag::MoveItems {
+                                anchor_id,
                                 start_mx,
                                 start_my,
-                                orig_x,
-                                orig_y,
+                                orig_positions,
                             } => {
-                                let paper = this.app.read(cx).state.paper.clone();
+                                if (mx - start_mx).hypot(my - start_my) < 1.0 {
+                                    return;
+                                }
+                                let (paper, snap_grid, cur_mode) = {
+                                    let st = &this.app.read(cx).state;
+                                    (st.paper.clone(), st.snap_to_grid, st.mode)
+                                };
                                 let scale = this.display_scale(&paper).max(0.01);
-                                let mut nx = orig_x + (mx - start_mx) / scale;
-                                let mut ny = orig_y + (my - start_my) / scale;
-                                let snap = this.app.read(cx).state.snap_to_grid;
-                                if snap {
-                                    nx = (nx / 10.0).round() * 10.0;
-                                    ny = (ny / 10.0).round() * 10.0;
+                                let mut dx = (mx - start_mx) / scale;
+                                let mut dy = (my - start_my) / scale;
+
+                                let mut guides = Vec::new();
+                                if cur_mode == LayoutMode::Freeform
+                                    && let Some(&(_, ax0, ay0)) =
+                                        orig_positions.iter().find(|(id, _, _)| *id == anchor_id)
+                                {
+                                    if snap_grid && !ev.modifiers.alt {
+                                        let step = mm_to_px(5.0, paper.dpi).max(10.0);
+                                        let snapped_x = ((ax0 + dx) / step).round() * step;
+                                        let snapped_y = ((ay0 + dy) / step).round() * step;
+                                        dx = snapped_x - ax0;
+                                        dy = snapped_y - ay0;
+                                    }
+
+                                    // Smart alignment guides against paper safe bounds & other visible items
+                                    if !ev.modifiers.alt {
+                                        let st = &this.app.read(cx).state;
+                                        if let Some(anchor) =
+                                            st.free_items.iter().find(|i| i.id == anchor_id)
+                                        {
+                                            let aw = anchor.width_px;
+                                            let ah = anchor.height_px;
+                                            let cand_x = ax0 + dx;
+                                            let cand_y = ay0 + dy;
+                                            let thresh = 6.0 / scale;
+                                            let (ml, mt, pw, ph) = paper.printable_bounds_px();
+
+                                            let mut x_targets = vec![ml, ml + pw * 0.5, ml + pw];
+                                            let mut y_targets = vec![mt, mt + ph * 0.5, mt + ph];
+                                            for other in &st.free_items {
+                                                if !other.visible
+                                                    || orig_positions
+                                                        .iter()
+                                                        .any(|(pid, _, _)| *pid == other.id)
+                                                {
+                                                    continue;
+                                                }
+                                                x_targets.push(other.x_px);
+                                                x_targets.push(other.x_px + other.width_px * 0.5);
+                                                x_targets.push(other.x_px + other.width_px);
+                                                y_targets.push(other.y_px);
+                                                y_targets.push(other.y_px + other.height_px * 0.5);
+                                                y_targets.push(other.y_px + other.height_px);
+                                            }
+
+                                            let anchor_xs = [cand_x, cand_x + aw * 0.5, cand_x + aw];
+                                            let mut best_dx: Option<(f32, f32)> = None;
+                                            for &ax in &anchor_xs {
+                                                for &tx in &x_targets {
+                                                    let diff = tx - ax;
+                                                    if diff.abs() <= thresh
+                                                        && best_dx
+                                                            .is_none_or(|(bd, _)| diff.abs() < bd.abs())
+                                                    {
+                                                        best_dx = Some((diff, tx));
+                                                    }
+                                                }
+                                            }
+                                            if let Some((snap_dx, guide_x)) = best_dx {
+                                                dx += snap_dx;
+                                                guides.push(SnapGuide::Vertical(guide_x));
+                                            }
+
+                                            let anchor_ys = [cand_y, cand_y + ah * 0.5, cand_y + ah];
+                                            let mut best_dy: Option<(f32, f32)> = None;
+                                            for &ay in &anchor_ys {
+                                                for &ty in &y_targets {
+                                                    let diff = ty - ay;
+                                                    if diff.abs() <= thresh
+                                                        && best_dy
+                                                            .is_none_or(|(bd, _)| diff.abs() < bd.abs())
+                                                    {
+                                                        best_dy = Some((diff, ty));
+                                                    }
+                                                }
+                                            }
+                                            if let Some((snap_dy, guide_y)) = best_dy {
+                                                dy += snap_dy;
+                                                guides.push(SnapGuide::Horizontal(guide_y));
+                                            }
+                                        }
+                                    }
+                                }
+                                this.active_guides = guides;
+
+                                let push_undo = !this.drag_undo_pushed;
+                                if push_undo {
+                                    this.drag_undo_pushed = true;
                                 }
                                 this.app.update(cx, |app, _| {
-                                    if let Some(item) = app.state.find_item_mut(id) {
-                                        item.x_px = nx;
-                                        item.y_px = ny;
-                                        StudioState::clamp_item_to_safe_margin(&paper, item);
+                                    if push_undo {
+                                        app.state.push_freeform_undo();
+                                    }
+                                    for &(id, ox, oy) in &orig_positions {
+                                        if let Some(item) = app.state.find_item_mut(id) {
+                                            item.x_px = ox + dx;
+                                            item.y_px = oy + dy;
+                                            StudioState::clamp_item_to_safe_margin(&paper, item);
+                                        }
                                     }
                                 });
                                 cx.notify();
                             }
                             CanvasDrag::ResizeItem {
                                 id,
+                                handle,
                                 start_mx,
                                 start_my,
+                                orig_x,
+                                orig_y,
                                 orig_w,
                                 orig_h,
                             } => {
@@ -443,15 +757,87 @@ impl Render for CanvasView {
                                 let scale = this.display_scale(&paper).max(0.01);
                                 let dw = (mx - start_mx) / scale;
                                 let dh = (my - start_my) / scale;
+                                let shift_lock = ev.modifiers.shift;
+                                let push_undo = !this.drag_undo_pushed;
+                                if push_undo {
+                                    this.drag_undo_pushed = true;
+                                }
                                 this.app.update(cx, |app, _| {
+                                    if push_undo {
+                                        app.state.push_freeform_undo();
+                                    }
                                     if let Some(item) = app.state.find_item_mut(id) {
+                                        let min_sz = 32.0f32;
                                         let aspect = orig_h / orig_w.max(1.0);
-                                        let nw = (orig_w + dw).max(32.0);
-                                        let nh = if item.lock_aspect {
-                                            (nw * aspect).max(32.0)
-                                        } else {
-                                            (orig_h + dh).max(32.0)
-                                        };
+                                        let is_corner = matches!(
+                                            handle,
+                                            ResizeHandle::TopLeft
+                                                | ResizeHandle::TopRight
+                                                | ResizeHandle::BottomLeft
+                                                | ResizeHandle::BottomRight
+                                        );
+                                        let keep_aspect = is_corner && (item.lock_aspect || shift_lock);
+
+                                        let mut nx = orig_x;
+                                        let mut ny = orig_y;
+                                        let mut nw = orig_w;
+                                        let mut nh = orig_h;
+
+                                        match handle {
+                                            ResizeHandle::Right => {
+                                                nw = (orig_w + dw).max(min_sz);
+                                            }
+                                            ResizeHandle::Left => {
+                                                nw = (orig_w - dw).max(min_sz);
+                                                nx = orig_x + (orig_w - nw);
+                                            }
+                                            ResizeHandle::Bottom => {
+                                                nh = (orig_h + dh).max(min_sz);
+                                            }
+                                            ResizeHandle::Top => {
+                                                nh = (orig_h - dh).max(min_sz);
+                                                ny = orig_y + (orig_h - nh);
+                                            }
+                                            ResizeHandle::BottomRight => {
+                                                nw = (orig_w + dw).max(min_sz);
+                                                nh = if keep_aspect {
+                                                    (nw * aspect).max(min_sz)
+                                                } else {
+                                                    (orig_h + dh).max(min_sz)
+                                                };
+                                            }
+                                            ResizeHandle::TopLeft => {
+                                                nw = (orig_w - dw).max(min_sz);
+                                                nh = if keep_aspect {
+                                                    (nw * aspect).max(min_sz)
+                                                } else {
+                                                    (orig_h - dh).max(min_sz)
+                                                };
+                                                nx = orig_x + (orig_w - nw);
+                                                ny = orig_y + (orig_h - nh);
+                                            }
+                                            ResizeHandle::TopRight => {
+                                                nw = (orig_w + dw).max(min_sz);
+                                                nh = if keep_aspect {
+                                                    (nw * aspect).max(min_sz)
+                                                } else {
+                                                    (orig_h - dh).max(min_sz)
+                                                };
+                                                ny = orig_y + (orig_h - nh);
+                                            }
+                                            ResizeHandle::BottomLeft => {
+                                                nw = (orig_w - dw).max(min_sz);
+                                                nh = if keep_aspect {
+                                                    (nw * aspect).max(min_sz)
+                                                } else {
+                                                    (orig_h + dh).max(min_sz)
+                                                };
+                                                nx = orig_x + (orig_w - nw);
+                                            }
+                                        }
+
+                                        item.x_px = nx;
+                                        item.y_px = ny;
                                         item.width_px = nw;
                                         item.height_px = nh;
                                         if let Some(tb) = &mut item.text {
@@ -469,9 +855,11 @@ impl Render for CanvasView {
                         cx.listener(|this, ev: &MouseUpEvent, _, cx| {
                             let was_item_mutation = matches!(
                                 this.drag_state,
-                                CanvasDrag::MoveItem { .. } | CanvasDrag::ResizeItem { .. }
+                                CanvasDrag::MoveItems { .. } | CanvasDrag::ResizeItem { .. }
                             );
                             this.drag_state = CanvasDrag::None;
+                            this.drag_undo_pushed = false;
+                            this.active_guides.clear();
                             if let Some((clicked_id, down_x, down_y)) =
                                 this.pending_text_click.take()
                             {
@@ -483,8 +871,9 @@ impl Render for CanvasView {
                                             && app
                                                 .state
                                                 .find_item(clicked_id)
-                                                .is_some_and(|i| i.is_text())
+                                                .is_some_and(|i| i.is_text() && !i.locked)
                                         {
+                                            app.state.push_freeform_undo();
                                             app.state.editing_text_id = Some(clicked_id);
                                             cx.notify();
                                         }
@@ -510,20 +899,57 @@ impl Render for CanvasView {
                             .border_1()
                             .border_color(cx.theme().border)
                             .shadow_lg()
+                            // Optional 5mm Freeform Snap Grid
+                            .when(is_freeform && snap_to_grid, |d| {
+                                d.child(
+                                    canvas(
+                                        |_, _, _| {},
+                                        move |bounds, (), window, _| {
+                                            paint_paper_grid(
+                                                bounds,
+                                                margin_disp,
+                                                grid_step_disp,
+                                                window,
+                                            );
+                                        },
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                            })
                             // Safe Print Margin Boundary Box
                             .child(
                                 div()
                                     .absolute()
-                                    .left(px(margin_px * display_scale))
-                                    .top(px(margin_px * display_scale))
-                                    .w(px((paper_w_px - margin_px * 2.0).max(0.0) * display_scale))
-                                    .h(px((paper_h_px - margin_px * 2.0).max(0.0) * display_scale))
+                                    .left(px(margin_disp))
+                                    .top(px(margin_disp))
+                                    .w(px((disp_paper_w - margin_disp * 2.0).max(0.0)))
+                                    .h(px((disp_paper_h - margin_disp * 2.0).max(0.0)))
                                     .border_1()
                                     .border_dashed()
                                     .border_color(rgb(0x94A3B8).opacity(0.55)),
                             )
                             // Render all CanvasItems on the sheet
-                            .children(rendered_items),
+                            .children(rendered_items)
+                            // Smart Alignment Guides overlay during drag
+                            .when(!active_guides.is_empty(), |d| {
+                                d.child(
+                                    canvas(
+                                        |_, _, _| {},
+                                        move |bounds, (), window, _| {
+                                            paint_snap_guides(
+                                                bounds,
+                                                &active_guides,
+                                                display_scale,
+                                                guide_color,
+                                                window,
+                                            );
+                                        },
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                            }),
                     )
             )
             // Standard StatusBar component

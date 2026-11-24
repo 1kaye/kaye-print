@@ -238,13 +238,13 @@ pub fn open_printer_settings_dialog(
                                                 Button::new("dialog-orient-portrait")
                                                     .flex_1()
                                                     .label(lang.tr("app.portrait_full"))
-                                                    .primary_selected(orientation == Orientation::Portrait, cx),
+                                                    .neutral_selected(orientation == Orientation::Portrait, cx),
                                             )
                                             .child(
                                                 Button::new("dialog-orient-landscape")
                                                     .flex_1()
                                                     .label(lang.tr("app.landscape_full"))
-                                                    .primary_selected(orientation == Orientation::Landscape, cx),
+                                                    .neutral_selected(orientation == Orientation::Landscape, cx),
                                             )
                                             .on_click(move |clicks: &Vec<usize>, _window: &mut Window, cx: &mut App| {
                                                 if let Some(&first) = clicks.first() {
@@ -280,19 +280,19 @@ pub fn open_printer_settings_dialog(
                                                 Button::new("dialog-qual-draft")
                                                     .flex_1()
                                                     .label(lang.tr("app.quality_draft"))
-                                                    .primary_selected(is_draft, cx),
+                                                    .neutral_selected(is_draft, cx),
                                             )
                                             .child(
                                                 Button::new("dialog-qual-std")
                                                     .flex_1()
                                                     .label(lang.tr("app.quality_standard"))
-                                                    .primary_selected(is_standard, cx),
+                                                    .neutral_selected(is_standard, cx),
                                             )
                                             .child(
                                                 Button::new("dialog-qual-high")
                                                     .flex_1()
                                                     .label(lang.tr("app.quality_high"))
-                                                    .primary_selected(is_high, cx),
+                                                    .neutral_selected(is_high, cx),
                                             )
                                             .on_click(move |clicks: &Vec<usize>, _window: &mut Window, cx: &mut App| {
                                                 if let Some(&first) = clicks.first() {
@@ -322,13 +322,13 @@ pub fn open_printer_settings_dialog(
                                                 Button::new("dialog-col-color")
                                                     .flex_1()
                                                     .label(lang.tr("app.color"))
-                                                    .primary_selected(!is_grayscale, cx),
+                                                    .neutral_selected(!is_grayscale, cx),
                                             )
                                             .child(
                                                 Button::new("dialog-col-gray")
                                                     .flex_1()
                                                     .label(lang.tr("app.grayscale_full"))
-                                                    .primary_selected(is_grayscale, cx),
+                                                    .neutral_selected(is_grayscale, cx),
                                             )
                                             .on_click(move |clicks: &Vec<usize>, _window: &mut Window, cx: &mut App| {
                                                 if let Some(&first) = clicks.first() {

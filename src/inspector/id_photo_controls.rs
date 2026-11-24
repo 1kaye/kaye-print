@@ -101,7 +101,7 @@ pub fn render_id_photo_panel(
                                         .flex_1()
                                         .icon(icon)
                                         .label(kind.label_for(lang))
-                                        .primary_selected(shape_kind == kind, cx)
+                                        .neutral_selected(shape_kind == kind, cx)
                                 }))
                                 .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
                                     if let Some(&first) = clicks.first()
@@ -134,7 +134,7 @@ pub fn render_id_photo_panel(
                                     Button::new(("id-photo-preset", p as usize))
                                         .flex_1()
                                         .label(p.label_for(lang))
-                                        .primary_selected(preset == p, cx)
+                                        .neutral_selected(preset == p, cx)
                                 }))
                                 .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
                                     if let Some(&first) = clicks.first()
@@ -264,13 +264,13 @@ pub fn render_id_photo_panel(
                                     Button::new("btn-id-photo-cut-line")
                                         .flex_1()
                                         .label(lang.tr("app.cut_line"))
-                                        .primary_selected(cut_line_enabled, cx),
+                                        .neutral_selected(cut_line_enabled, cx),
                                 )
                                 .child(
                                     Button::new("btn-id-photo-free-move")
                                         .flex_1()
                                         .label(lang.tr("app.free_move"))
-                                        .primary_selected(free_move_enabled, cx),
+                                        .neutral_selected(free_move_enabled, cx),
                                 )
                                 .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
                                     let cut_line = selected.contains(&0);
@@ -418,13 +418,13 @@ pub fn render_id_photo_panel(
                                                 Button::new(("btn-pas-item-cut-line", id))
                                                     .flex_1()
                                                     .label(lang.tr("app.cut_line"))
-                                                    .primary_selected(cut_line, cx),
+                                                    .neutral_selected(cut_line, cx),
                                             )
                                             .child(
                                                 Button::new(("btn-pas-item-bg-color", id))
                                                     .flex_1()
                                                     .label(lang.tr("app.bg_color"))
-                                                    .primary_selected(item.bg_color.is_some(), cx),
+                                                    .neutral_selected(item.bg_color.is_some(), cx),
                                             )
                                             .on_click(cx.listener(move |this, selected: &Vec<usize>, _, cx| {
                                                 let new_cut_line = selected.contains(&0);

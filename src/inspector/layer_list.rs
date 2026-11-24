@@ -257,11 +257,12 @@ impl Render for DragLayerPayload {
 
 impl Render for LayerListView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (free_items, selected_id, editing_layer_id, lang) = {
+        let (free_items, selected_id, selected_ids, editing_layer_id, lang) = {
             let app_guard = self.app.read(cx);
             (
                 app_guard.state.free_items.clone(),
                 app_guard.state.selected_id,
+                app_guard.state.selected_ids.clone(),
                 app_guard.state.editing_layer_id,
                 app_guard.state.language,
             )
@@ -290,7 +291,9 @@ impl Render for LayerListView {
     let mut layer_elements = Vec::with_capacity(total);
     for (idx, item) in free_items.iter().enumerate().rev() {
         let id = item.id;
-        let is_selected = selected_id == Some(id);
+        let is_selected = selected_id == Some(id) || selected_ids.contains(&id);
+        let is_visible = item.visible;
+        let is_locked = item.locked;
         let is_drag_source = dragged_src_id == Some(id);
         let visual_row = preview_order
             .iter()
@@ -379,8 +382,62 @@ impl Render for LayerListView {
                 .gap_0p5()
                 .flex_shrink_0()
                 .child(
+                    Button::new(("layer-vis", id))
+                        .xsmall()
+                        .ghost()
+                        .icon(
+                            Icon::new(if is_visible {
+                                IconName::Eye
+                            } else {
+                                IconName::EyeOff
+                            })
+                            .xsmall()
+                            .when(!is_visible, |ic| ic.text_color(cx.theme().muted_foreground)),
+                        )
+                        .tooltip(if is_visible {
+                            lang.tr("app.layer_hide_tooltip")
+                        } else {
+                            lang.tr("app.layer_show_tooltip")
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.app.update(cx, |app, cx| {
+                                app.state.toggle_item_visible(id);
+                                cx.notify();
+                            });
+                        })),
+                )
+                .child(
+                    Button::new(("layer-lock", id))
+                        .xsmall()
+                        .ghost()
+                        .icon(
+                            Icon::new(if is_locked {
+                                IconName::Lock
+                            } else {
+                                IconName::LockOpen
+                            })
+                            .xsmall()
+                            .text_color(if is_locked {
+                                cx.theme().primary
+                            } else {
+                                cx.theme().muted_foreground
+                            }),
+                        )
+                        .tooltip(if is_locked {
+                            lang.tr("app.ctx_unlock_layer")
+                        } else {
+                            lang.tr("app.ctx_lock_layer")
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.app.update(cx, |app, cx| {
+                                app.state.toggle_item_locked(id);
+                                cx.notify();
+                            });
+                        })),
+                )
+                .child(
                     Button::new(("layer-up", id))
-                        .small()
+                        .xsmall()
                         .ghost()
                         .icon(IconName::ChevronUp)
                         .disabled(idx == total - 1)
@@ -394,7 +451,7 @@ impl Render for LayerListView {
                 )
                 .child(
                     Button::new(("layer-down", id))
-                        .small()
+                        .xsmall()
                         .ghost()
                         .icon(IconName::ChevronDown)
                         .disabled(idx == 0)
@@ -443,16 +500,24 @@ impl Render for LayerListView {
                     let drag_label = label.clone();
                     d.on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, window: &mut Window, cx| {
+                        cx.listener(move |this, ev: &gpui_kit::MouseDownEvent, window: &mut Window, cx| {
                             this.rename_session = None;
+                            let shift = ev.modifiers.shift;
                             this.app.update(cx, |app, cx| {
                                 app.canvas_focus.focus(window, cx);
-                                let changed = app.state.selected_id != Some(id)
-                                    || app.state.editing_layer_id.is_some();
-                                app.state.selected_id = Some(id);
-                                app.state.editing_layer_id = None;
-                                if changed {
+                                if shift {
+                                    app.state.toggle_select_item(id);
+                                    app.state.editing_layer_id = None;
                                     cx.notify();
+                                } else {
+                                    let changed = app.state.selected_id != Some(id)
+                                        || app.state.selected_ids.len() > 1
+                                        || app.state.editing_layer_id.is_some();
+                                    app.state.select_single(Some(id));
+                                    app.state.editing_layer_id = None;
+                                    if changed {
+                                        cx.notify();
+                                    }
                                 }
                             });
                         }),
@@ -482,6 +547,7 @@ impl Render for LayerListView {
                                 .gap_1p5()
                                 .flex_1()
                                 .min_w_0()
+                                .when(!is_visible, |r| r.opacity(0.45))
                                 .child(
                                     Icon::new(IconName::GripVertical)
                                         .small()

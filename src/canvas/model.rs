@@ -58,7 +58,19 @@ pub struct ContextMenuState {
     pub y: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizeHandle {
+    TopLeft,
+    Top,
+    TopRight,
+    Right,
+    BottomRight,
+    Bottom,
+    BottomLeft,
+    Left,
+}
+
+#[derive(Clone, Debug)]
 pub enum CanvasDrag {
     None,
     PanCanvas {
@@ -67,17 +79,19 @@ pub enum CanvasDrag {
         orig_pan_x: f32,
         orig_pan_y: f32,
     },
-    MoveItem {
+    MoveItems {
+        anchor_id: u64,
+        start_mx: f32,
+        start_my: f32,
+        orig_positions: Vec<(u64, f32, f32)>,
+    },
+    ResizeItem {
         id: u64,
+        handle: ResizeHandle,
         start_mx: f32,
         start_my: f32,
         orig_x: f32,
         orig_y: f32,
-    },
-    ResizeItem {
-        id: u64,
-        start_mx: f32,
-        start_my: f32,
         orig_w: f32,
         orig_h: f32,
     },
@@ -311,6 +325,10 @@ pub struct TextBoxData {
     pub font_family: String,
     pub color: Hsla,
     pub align: TextAlignMode,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub line_height: f32,
     /// Becomes `true` once the user manually resizes the frame width on canvas.
     pub manual_size: bool,
 }
@@ -322,6 +340,7 @@ pub enum FreeformShapeKind {
     Triangle,
     Diamond,
     Star,
+    Line,
 }
 
 impl FreeformShapeKind {
@@ -331,6 +350,7 @@ impl FreeformShapeKind {
         Self::Triangle,
         Self::Diamond,
         Self::Star,
+        Self::Line,
     ];
 
     pub fn label_for(self, lang: Language) -> SharedString {
@@ -340,6 +360,7 @@ impl FreeformShapeKind {
             Self::Triangle => lang.tr("app.shape_triangle"),
             Self::Diamond => lang.tr("app.shape_diamond"),
             Self::Star => lang.tr("app.shape_star"),
+            Self::Line => lang.tr("app.shape_line"),
         }
     }
 }
@@ -348,6 +369,8 @@ impl FreeformShapeKind {
 pub struct ShapeBoxData {
     pub kind: FreeformShapeKind,
     pub fill_color: Hsla,
+    pub stroke_color: Option<Hsla>,
+    pub stroke_width: f32,
 }
 
 #[derive(Clone)]
@@ -357,7 +380,6 @@ pub struct CanvasItem {
     pub y_px: f32,
     pub width_px: f32,
     pub height_px: f32,
-    #[allow(dead_code)]
     pub rotation_deg: f32,
     pub lock_aspect: bool,
     pub shape_kind: ShapeKind,
@@ -372,6 +394,9 @@ pub struct CanvasItem {
     pub transform: ImageTransform,
     pub corner_radius: f32,
     pub bg_color: Option<Hsla>,
+    pub opacity: f32,
+    pub visible: bool,
+    pub locked: bool,
     pub custom_name: Option<String>,
 }
 
@@ -385,9 +410,10 @@ impl CanvasItem {
     }
 
     pub fn is_printable(&self) -> bool {
-        self.image.is_some()
-            || self.text.as_ref().is_some_and(|t| !t.content.trim().is_empty())
-            || self.shape.is_some()
+        self.visible
+            && (self.image.is_some()
+                || self.text.as_ref().is_some_and(|t| !t.content.trim().is_empty())
+                || self.shape.is_some())
     }
 
     #[allow(dead_code)]
@@ -454,6 +480,16 @@ pub struct PrintRenderSnapshot {
     pub items: Vec<CanvasItem>,
 }
 
+fn hsla_to_rgba_u8(c: Hsla) -> [u8; 4] {
+    let rgb = c.to_rgb();
+    [
+        (rgb.r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (rgb.g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (rgb.b * 255.0).round().clamp(0.0, 255.0) as u8,
+        (rgb.a * 255.0).round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
 impl PrintRenderSnapshot {
     fn composite_items_onto_sheet(
         &self,
@@ -465,6 +501,10 @@ impl PrintRenderSnapshot {
         let mut transform_cache: Vec<(usize, ImageTransform, image::DynamicImage)> = Vec::new();
         let is_freeform = self.mode == LayoutMode::Freeform;
         for item in items {
+            if !item.visible {
+                continue;
+            }
+            let item_opacity = item.opacity.clamp(0.0, 1.0);
             if let Some(asset) = &item.image {
                 let ptr = std::sync::Arc::as_ptr(&asset.raw_image) as usize;
                 let transformed = if !crate::canvas::geometry::is_transform_needed(&item.transform)
@@ -494,15 +534,7 @@ impl PrintRenderSnapshot {
                     )
                 };
 
-                let bg_rgba = item.bg_color.map(|c| {
-                    let rgb = c.to_rgb();
-                    [
-                        (rgb.r * 255.0).round().clamp(0.0, 255.0) as u8,
-                        (rgb.g * 255.0).round().clamp(0.0, 255.0) as u8,
-                        (rgb.b * 255.0).round().clamp(0.0, 255.0) as u8,
-                        (rgb.a * 255.0).round().clamp(0.0, 255.0) as u8,
-                    ]
-                });
+                let bg_rgba = item.bg_color.map(hsla_to_rgba_u8);
 
                 composite_item_onto_sheet(
                     sheet,
@@ -520,21 +552,24 @@ impl PrintRenderSnapshot {
                     bg_rgba,
                     cut_line,
                     item.cut_line_width,
+                    item_opacity,
                 );
             } else if is_freeform && let Some(tb) = &item.text {
-                let rgb = tb.color.to_rgb();
-                let text_rgb = [
-                    (rgb.r * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rgb.g * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rgb.b * 255.0).round().clamp(0.0, 255.0) as u8,
-                ];
+                let text_rgba = hsla_to_rgba_u8(tb.color);
+                let bg_rgba = item.bg_color.map(hsla_to_rgba_u8);
                 composite_text_onto_sheet(
                     sheet,
                     &tb.content,
                     tb.font_size_pt,
                     &tb.font_family,
-                    text_rgb,
+                    [text_rgba[0], text_rgba[1], text_rgba[2]],
                     tb.align,
+                    tb.bold,
+                    tb.italic,
+                    tb.underline,
+                    tb.line_height,
+                    bg_rgba,
+                    item_opacity * (text_rgba[3] as f32 / 255.0),
                     self.paper.dpi,
                     (item.x_px - offset_x_px).round() as i32,
                     (item.y_px - offset_y_px).round() as i32,
@@ -543,17 +578,16 @@ impl PrintRenderSnapshot {
                     TEXT_BOX_PAD_PX,
                 );
             } else if is_freeform && let Some(sb) = &item.shape {
-                let rgb = sb.fill_color.to_rgb();
-                let fill_rgba = [
-                    (rgb.r * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rgb.g * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rgb.b * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (rgb.a * 255.0).round().clamp(0.0, 255.0) as u8,
-                ];
+                let fill_rgba = hsla_to_rgba_u8(sb.fill_color);
+                let stroke_rgba = sb.stroke_color.map(hsla_to_rgba_u8);
                 composite_shape_onto_sheet(
                     sheet,
                     sb.kind,
                     fill_rgba,
+                    stroke_rgba,
+                    sb.stroke_width,
+                    item.rotation_deg,
+                    item_opacity,
                     (item.x_px - offset_x_px).round() as i32,
                     (item.y_px - offset_y_px).round() as i32,
                     item.width_px.round().max(1.0) as u32,
@@ -588,11 +622,23 @@ impl PrintRenderSnapshot {
         let mut max_y = 0.0f32;
 
         for item in &active_items {
-            let pad = if item.cut_line {
+            let cut_pad = if item.cut_line {
                 (item.cut_line_width * 2.0).round().max(2.0) + 2.0
             } else {
                 0.0
             };
+            let rot_pad = if item.rotation_deg.abs() > 0.01 {
+                (item.width_px.hypot(item.height_px) - item.width_px.min(item.height_px)) * 0.5
+                    + 2.0
+            } else {
+                0.0
+            };
+            let stroke_pad = item
+                .shape
+                .as_ref()
+                .map(|s| s.stroke_width * 0.5 + 2.0)
+                .unwrap_or(0.0);
+            let pad = cut_pad.max(rot_pad).max(stroke_pad);
             min_x = min_x.min((item.x_px - pad).max(0.0));
             min_y = min_y.min((item.y_px - pad).max(0.0));
             max_x = max_x.max((item.x_px + item.width_px + pad).min(pw_f));

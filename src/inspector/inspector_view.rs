@@ -3,7 +3,7 @@ use gpui_kit::{
     Render, Styled, Subscription, Window,
     assets::IconName,
     component::{
-        ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, Size, WindowExt as _,
+        ActiveTheme as _, Disableable as _, Sizable as _, Size, WindowExt as _,
         button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _},
         dialog::DialogEntrance,
         h_flex, Icon,
@@ -17,6 +17,7 @@ use crate::{
     app::StudioApp,
     canvas::model::LayoutMode,
     inspector::{
+        common::ButtonSelectedExt as _,
         freeform_controls::render_freeform_panel,
         id_photo_controls::render_id_photo_panel,
         layer_list::LayerListView,
@@ -183,21 +184,21 @@ fn render_inspector_sections(
                         .flex_1()
                         .icon(Icon::new(IconName::Frame).with_size(Size::Medium))
                         .label(lang.tr("app.mode_id_photo"))
-                        .selected(mode == LayoutMode::IdPhoto),
+                        .neutral_selected(mode == LayoutMode::IdPhoto, cx),
                 )
                 .child(
                     Button::new("mode-freeform")
                         .flex_1()
                         .icon(Icon::new(IconName::Layers).with_size(Size::Medium))
                         .label(lang.tr("app.mode_freeform"))
-                        .selected(mode == LayoutMode::Freeform),
+                        .neutral_selected(mode == LayoutMode::Freeform, cx),
                 )
                 .child(
                     Button::new("mode-full-image")
                         .flex_1()
                         .icon(Icon::new(IconName::Maximize).with_size(Size::Medium))
                         .label(lang.tr("app.mode_full_image"))
-                        .selected(mode == LayoutMode::FullImage),
+                        .neutral_selected(mode == LayoutMode::FullImage, cx),
                 )
                 .on_click(cx.listener(|this, clicks: &Vec<usize>, window: &mut Window, cx| {
                     if let Some(&first) = clicks.first() {

@@ -7,7 +7,7 @@ use std::{
 
 use cosmic_text::{
     Align as CosmicAlign, Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics,
-    Shaping, SwashCache, Wrap,
+    Shaping, Style as CosmicStyle, SwashCache, Weight as CosmicWeight, Wrap,
 };
 use gpui_kit::RenderImage;
 use image::{
@@ -238,7 +238,27 @@ pub fn compute_fitted_image_geometry(
     (draw_w, draw_h, offset_x, offset_y)
 }
 
-/// Renders an item image into a sheet buffer at the given frame rectangle, respecting pan/zoom, fit_mode & oval clipping.
+#[inline]
+fn blend_pixel_over(dst: &mut [u8], src: [u8; 4], opacity: f32) {
+    let eff_a = ((src[3] as f32) * opacity.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u32;
+    if eff_a == 0 {
+        return;
+    }
+    if eff_a == 255 {
+        dst[0] = src[0];
+        dst[1] = src[1];
+        dst[2] = src[2];
+        dst[3] = 255;
+        return;
+    }
+    let inv_a = 255 - eff_a;
+    dst[0] = ((src[0] as u32 * eff_a + dst[0] as u32 * inv_a + 127) / 255) as u8;
+    dst[1] = ((src[1] as u32 * eff_a + dst[1] as u32 * inv_a + 127) / 255) as u8;
+    dst[2] = ((src[2] as u32 * eff_a + dst[2] as u32 * inv_a + 127) / 255) as u8;
+    dst[3] = 255;
+}
+
+/// Renders an item image into a sheet buffer at the given frame rectangle, respecting pan/zoom, fit_mode, oval clipping & opacity.
 pub fn composite_item_onto_sheet(
     sheet: &mut RgbaImage,
     item_img: &DynamicImage,
@@ -255,8 +275,10 @@ pub fn composite_item_onto_sheet(
     bg_color: Option<[u8; 4]>,
     cut_line: bool,
     cut_line_width: f32,
+    opacity: f32,
 ) {
-    if frame_w == 0 || frame_h == 0 {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if frame_w == 0 || frame_h == 0 || opacity <= 0.001 {
         return;
     }
     let (img_w, img_h) = item_img.dimensions();
@@ -343,7 +365,7 @@ pub fn composite_item_onto_sheet(
                         }
                     }
                     let d_idx = dst_row + (dst_x as usize) * 4;
-                    dst_raw[d_idx..d_idx + 4].copy_from_slice(&bg);
+                    blend_pixel_over(&mut dst_raw[d_idx..d_idx + 4], bg, opacity);
                 }
             }
             continue;
@@ -396,7 +418,7 @@ pub fn composite_item_onto_sheet(
             if src_draw_x < 0 || (src_draw_x as u32) >= draw_w {
                 if let Some(bg) = bg_color {
                     let d_idx = dst_row + (dst_x as usize) * 4;
-                    dst_raw[d_idx..d_idx + 4].copy_from_slice(&bg);
+                    blend_pixel_over(&mut dst_raw[d_idx..d_idx + 4], bg, opacity);
                 }
                 continue;
             }
@@ -424,23 +446,22 @@ pub fn composite_item_onto_sheet(
 
             if let Some(bg) = bg_color {
                 let src_a = interp[3] as u32;
-                if src_a == 255 {
-                    dst_raw[d_idx..d_idx + 4].copy_from_slice(&interp);
+                let composed = if src_a == 255 {
+                    interp
                 } else if src_a == 0 {
-                    dst_raw[d_idx..d_idx + 4].copy_from_slice(&bg);
+                    bg
                 } else {
                     let inv_a = 255 - src_a;
-                    let out_r = (interp[0] as u32 * src_a + bg[0] as u32 * inv_a + 127) / 255;
-                    let out_g = (interp[1] as u32 * src_a + bg[1] as u32 * inv_a + 127) / 255;
-                    let out_b = (interp[2] as u32 * src_a + bg[2] as u32 * inv_a + 127) / 255;
-                    let out_a = (src_a + (bg[3] as u32 * inv_a + 127) / 255).min(255);
-                    dst_raw[d_idx] = out_r as u8;
-                    dst_raw[d_idx + 1] = out_g as u8;
-                    dst_raw[d_idx + 2] = out_b as u8;
-                    dst_raw[d_idx + 3] = out_a as u8;
-                }
+                    [
+                        ((interp[0] as u32 * src_a + bg[0] as u32 * inv_a + 127) / 255) as u8,
+                        ((interp[1] as u32 * src_a + bg[1] as u32 * inv_a + 127) / 255) as u8,
+                        ((interp[2] as u32 * src_a + bg[2] as u32 * inv_a + 127) / 255) as u8,
+                        (src_a + (bg[3] as u32 * inv_a + 127) / 255).min(255) as u8,
+                    ]
+                };
+                blend_pixel_over(&mut dst_raw[d_idx..d_idx + 4], composed, opacity);
             } else {
-                dst_raw[d_idx..d_idx + 4].copy_from_slice(&interp);
+                blend_pixel_over(&mut dst_raw[d_idx..d_idx + 4], interp, opacity);
             }
         }
     }
@@ -585,13 +606,16 @@ pub fn measure_text_box_size_px(
     fallback_text: &str,
     font_size_pt: f32,
     font_family: &str,
+    bold: bool,
+    italic: bool,
+    line_height: f32,
     dpi: u32,
     fixed_width_px: Option<f32>,
     max_paper_width_px: f32,
 ) -> (f32, f32) {
     let sample = if text.is_empty() { fallback_text } else { text };
     let font_px = (font_size_pt.clamp(6.0, 300.0) * (dpi.max(72) as f32 / 72.0)).max(4.0);
-    let line_height_px = (font_px * 1.25).max(4.0);
+    let line_height_px = (font_px * line_height.clamp(0.9, 2.5)).max(4.0);
     let pad = TEXT_BOX_PAD_PX;
     let max_w = max_paper_width_px.max(64.0);
     let inner_max_w = match fixed_width_px {
@@ -604,12 +628,19 @@ pub fn measure_text_box_size_px(
         let mut borrowed = buffer.borrow_with(font_system);
         borrowed.set_size(Some(inner_max_w), None);
         borrowed.set_wrap(Wrap::WordOrGlyph);
-        borrowed.set_text(
-            sample,
-            &Attrs::new().family(resolve_cosmic_family(font_family)),
-            Shaping::Advanced,
-            None,
-        );
+        let attrs = Attrs::new()
+            .family(resolve_cosmic_family(font_family))
+            .weight(if bold {
+                CosmicWeight::BOLD
+            } else {
+                CosmicWeight::NORMAL
+            })
+            .style(if italic {
+                CosmicStyle::Italic
+            } else {
+                CosmicStyle::Normal
+            });
+        borrowed.set_text(sample, &attrs, Shaping::Advanced, None);
         borrowed.shape_until_scroll(false);
 
         let mut w = 0.0f32;
@@ -636,30 +667,38 @@ pub fn measure_text_box_size_px(
     }
 }
 
-fn freeform_shape_polygon(kind: FreeformShapeKind, w: f32, h: f32) -> Vec<(f32, f32)> {
+/// Shared polygon vertices in local `[0..w] x [0..h]` coordinates for Freeform shapes.
+/// `Star` vertices are normalized so all 4 bounding-box edges touch `[0..w]` and `[0..h]`.
+pub fn freeform_shape_polygon(kind: FreeformShapeKind, w: f32, h: f32) -> Vec<(f32, f32)> {
     match kind {
         FreeformShapeKind::Triangle => vec![(w * 0.5, 0.0), (w, h), (0.0, h)],
         FreeformShapeKind::Diamond => vec![(w * 0.5, 0.0), (w, h * 0.5), (w * 0.5, h), (0.0, h * 0.5)],
         FreeformShapeKind::Star => {
-            let cx = w * 0.5;
-            let cy = h * 0.5;
-            let rx_out = w * 0.5;
-            let ry_out = h * 0.5;
-            let rx_in = rx_out * 0.382;
-            let ry_in = ry_out * 0.382;
-            (0..10)
-                .map(|i| {
-                    let angle = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::PI / 5.0;
-                    let (rx, ry) = if i % 2 == 0 {
-                        (rx_out, ry_out)
-                    } else {
-                        (rx_in, ry_in)
-                    };
-                    (cx + rx * angle.cos(), cy + ry * angle.sin())
-                })
+            let mut raw = Vec::with_capacity(10);
+            let mut min_x = f32::INFINITY;
+            let mut max_x = f32::NEG_INFINITY;
+            let mut min_y = f32::INFINITY;
+            let mut max_y = f32::NEG_INFINITY;
+            for i in 0..10 {
+                let angle = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::PI / 5.0;
+                let r = if i % 2 == 0 { 1.0 } else { 0.382 };
+                let x = r * angle.cos();
+                let y = r * angle.sin();
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                raw.push((x, y));
+            }
+            let span_x = (max_x - min_x).max(1e-4);
+            let span_y = (max_y - min_y).max(1e-4);
+            raw.into_iter()
+                .map(|(x, y)| ((x - min_x) / span_x * w, (y - min_y) / span_y * h))
                 .collect()
         }
-        FreeformShapeKind::Rectangle | FreeformShapeKind::Circle => Vec::new(),
+        FreeformShapeKind::Rectangle | FreeformShapeKind::Circle | FreeformShapeKind::Line => {
+            Vec::new()
+        }
     }
 }
 
@@ -678,77 +717,186 @@ fn point_in_polygon(px: f32, py: f32, verts: &[(f32, f32)]) -> bool {
     inside
 }
 
-/// Rasterizes a Freeform vector shape onto `sheet` inside `(frame_x, frame_y, frame_w, frame_h)`.
+fn point_to_segment_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-6 {
+        return (px - ax).hypot(py - ay);
+    }
+    let t = (((px - ax) * dx + (py - ay) * dy) / len_sq).clamp(0.0, 1.0);
+    (px - (ax + t * dx)).hypot(py - (ay + t * dy))
+}
+
+fn min_dist_to_polygon_edges(px: f32, py: f32, verts: &[(f32, f32)]) -> f32 {
+    let n = verts.len();
+    if n < 2 {
+        return f32::INFINITY;
+    }
+    let mut best = f32::INFINITY;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (ax, ay) = verts[j];
+        let (bx, by) = verts[i];
+        best = best.min(point_to_segment_dist(px, py, ax, ay, bx, by));
+        j = i;
+    }
+    best
+}
+
+fn point_in_rounded_rect(lx: f32, ly: f32, fw: f32, fh: f32, r: f32) -> bool {
+    if lx < 0.0 || lx > fw || ly < 0.0 || ly > fh {
+        return false;
+    }
+    if r <= 0.5 {
+        return true;
+    }
+    let in_l = lx < r;
+    let in_r = lx > fw - r;
+    let in_t = ly < r;
+    let in_b = ly > fh - r;
+    if (in_l || in_r) && (in_t || in_b) {
+        let cx = if in_l { r } else { fw - r };
+        let cy = if in_t { r } else { fh - r };
+        (lx - cx).hypot(ly - cy) <= r
+    } else {
+        true
+    }
+}
+
+/// Rasterizes a Freeform vector shape onto `sheet` inside `(frame_x, frame_y, frame_w, frame_h)`
+/// with optional stroke, rotation, and opacity.
 pub fn composite_shape_onto_sheet(
     sheet: &mut RgbaImage,
     kind: FreeformShapeKind,
     fill_rgba: [u8; 4],
+    stroke_rgba: Option<[u8; 4]>,
+    stroke_width: f32,
+    rotation_deg: f32,
+    opacity: f32,
     frame_x: i32,
     frame_y: i32,
     frame_w: u32,
     frame_h: u32,
     corner_radius: f32,
 ) {
-    if frame_w == 0 || frame_h == 0 || fill_rgba[3] == 0 {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if frame_w == 0 || frame_h == 0 || opacity <= 0.001 {
         return;
     }
     let fw = frame_w as f32;
     let fh = frame_h as f32;
-    let x0 = frame_x.max(0);
-    let y0 = frame_y.max(0);
-    let x1 = (frame_x + frame_w as i32).min(sheet.width() as i32);
-    let y1 = (frame_y + frame_h as i32).min(sheet.height() as i32);
+    let sw_eff = stroke_width.max(0.0);
+    let has_stroke = stroke_rgba.is_some_and(|c| c[3] > 0) && sw_eff > 0.1;
+
+    let rad = rotation_deg.to_radians();
+    let cos_r = rad.cos();
+    let sin_r = rad.sin();
+    let cx_box = fw * 0.5;
+    let cy_box = fh * 0.5;
+
+    let pad = if rotation_deg.abs() > 0.01 {
+        ((fw.hypot(fh) - fw.min(fh)) * 0.5).ceil() as i32 + 2
+    } else {
+        0
+    };
+    let x0 = (frame_x - pad).max(0);
+    let y0 = (frame_y - pad).max(0);
+    let x1 = (frame_x + frame_w as i32 + pad).min(sheet.width() as i32);
+    let y1 = (frame_y + frame_h as i32 + pad).min(sheet.height() as i32);
     if x0 >= x1 || y0 >= y1 {
         return;
     }
 
     let poly = freeform_shape_polygon(kind, fw, fh);
     let r = corner_radius.min(fw * 0.5).min(fh * 0.5).max(0.0);
-    let src_a = fill_rgba[3] as u32;
-    let inv_a = 255 - src_a;
 
     for py in y0..y1 {
-        let ly = (py - frame_y) as f32 + 0.5;
+        let dy_c = (py - frame_y) as f32 + 0.5 - cy_box;
         for px in x0..x1 {
-            let lx = (px - frame_x) as f32 + 0.5;
-            let inside = match kind {
+            let dx_c = (px - frame_x) as f32 + 0.5 - cx_box;
+            // Inverse-rotate sample point into shape-local coordinates
+            let (lx, ly) = if rotation_deg.abs() > 0.01 {
+                (
+                    cx_box + dx_c * cos_r + dy_c * sin_r,
+                    cy_box - dx_c * sin_r + dy_c * cos_r,
+                )
+            } else {
+                (dx_c + cx_box, dy_c + cy_box)
+            };
+
+            if kind == FreeformShapeKind::Line {
+                let half_t = sw_eff.max(2.0) * 0.5;
+                let d = point_to_segment_dist(lx, ly, 0.0, cy_box, fw, cy_box);
+                if d <= half_t {
+                    let line_col = stroke_rgba.unwrap_or(fill_rgba);
+                    let dst = sheet.get_pixel_mut(px as u32, py as u32);
+                    blend_pixel_over(&mut dst.0, line_col, opacity);
+                }
+                continue;
+            }
+
+            let (inside, on_stroke) = match kind {
                 FreeformShapeKind::Rectangle => {
-                    if r <= 0.5 {
-                        true
+                    let ins = point_in_rounded_rect(lx, ly, fw, fh, r);
+                    let stk = if ins && has_stroke {
+                        let iw = (fw - sw_eff * 2.0).max(0.0);
+                        let ih = (fh - sw_eff * 2.0).max(0.0);
+                        let ir = (r - sw_eff).max(0.0);
+                        iw <= 0.0
+                            || ih <= 0.0
+                            || !point_in_rounded_rect(lx - sw_eff, ly - sw_eff, iw, ih, ir)
                     } else {
-                        let in_l = lx < r;
-                        let in_r = lx > fw - r;
-                        let in_t = ly < r;
-                        let in_b = ly > fh - r;
-                        if (in_l || in_r) && (in_t || in_b) {
-                            let cx = if in_l { r } else { fw - r };
-                            let cy = if in_t { r } else { fh - r };
-                            (lx - cx).hypot(ly - cy) <= r
-                        } else {
-                            true
-                        }
-                    }
+                        false
+                    };
+                    (ins, stk)
                 }
                 FreeformShapeKind::Circle => {
-                    let dx = (lx - fw * 0.5) / (fw * 0.5);
-                    let dy = (ly - fh * 0.5) / (fh * 0.5);
-                    dx * dx + dy * dy <= 1.0
+                    let rx = (fw * 0.5).max(0.5);
+                    let ry = (fh * 0.5).max(0.5);
+                    let nx = (lx - rx) / rx;
+                    let ny = (ly - ry) / ry;
+                    let ins = nx * nx + ny * ny <= 1.0;
+                    let stk = if ins && has_stroke {
+                        let irx = (rx - sw_eff).max(0.0);
+                        let iry = (ry - sw_eff).max(0.0);
+                        if irx <= 0.5 || iry <= 0.5 {
+                            true
+                        } else {
+                            let inx = (lx - rx) / irx;
+                            let iny = (ly - ry) / iry;
+                            inx * inx + iny * iny > 1.0
+                        }
+                    } else {
+                        false
+                    };
+                    (ins, stk)
                 }
                 FreeformShapeKind::Triangle
                 | FreeformShapeKind::Diamond
-                | FreeformShapeKind::Star => point_in_polygon(lx, ly, &poly),
+                | FreeformShapeKind::Star => {
+                    let ins = point_in_polygon(lx, ly, &poly);
+                    let stk = ins
+                        && has_stroke
+                        && min_dist_to_polygon_edges(lx, ly, &poly) <= sw_eff;
+                    (ins, stk)
+                }
+                FreeformShapeKind::Line => (false, false),
             };
+
             if inside {
                 let dst = sheet.get_pixel_mut(px as u32, py as u32);
-                dst.0[0] = ((fill_rgba[0] as u32 * src_a + dst.0[0] as u32 * inv_a) / 255) as u8;
-                dst.0[1] = ((fill_rgba[1] as u32 * src_a + dst.0[1] as u32 * inv_a) / 255) as u8;
-                dst.0[2] = ((fill_rgba[2] as u32 * src_a + dst.0[2] as u32 * inv_a) / 255) as u8;
-                dst.0[3] = 255;
+                if on_stroke && let Some(sc) = stroke_rgba {
+                    blend_pixel_over(&mut dst.0, sc, opacity);
+                } else if fill_rgba[3] > 0 {
+                    blend_pixel_over(&mut dst.0, fill_rgba, opacity);
+                }
             }
         }
     }
 }
-/// at the sheet DPI so printed/PDF output matches the live Freeform canvas.
+
+/// Rasterizes a Freeform text box onto `sheet` at the sheet DPI so printed/PDF output matches canvas.
 pub fn composite_text_onto_sheet(
     sheet: &mut RgbaImage,
     text: &str,
@@ -756,6 +904,12 @@ pub fn composite_text_onto_sheet(
     font_family: &str,
     text_rgb: [u8; 3],
     align: TextAlignMode,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    line_height: f32,
+    bg_rgba: Option<[u8; 4]>,
+    opacity: f32,
     dpi: u32,
     frame_x: i32,
     frame_y: i32,
@@ -763,22 +917,41 @@ pub fn composite_text_onto_sheet(
     frame_h: u32,
     padding_px: f32,
 ) {
-    if text.trim().is_empty() || frame_w == 0 || frame_h == 0 {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if frame_w == 0 || frame_h == 0 || opacity <= 0.001 {
+        return;
+    }
+
+    let clip_max_x = (frame_x + frame_w as i32).min(sheet.width() as i32);
+    let clip_max_y = (frame_y + frame_h as i32).min(sheet.height() as i32);
+    let clip_min_x = frame_x.max(0);
+    let clip_min_y = frame_y.max(0);
+
+    if let Some(bg) = bg_rgba
+        && bg[3] > 0
+        && clip_min_x < clip_max_x
+        && clip_min_y < clip_max_y
+    {
+        for py in clip_min_y..clip_max_y {
+            for px in clip_min_x..clip_max_x {
+                let dst = sheet.get_pixel_mut(px as u32, py as u32);
+                blend_pixel_over(&mut dst.0, bg, opacity);
+            }
+        }
+    }
+
+    if text.trim().is_empty() {
         return;
     }
 
     let font_px = (font_size_pt.clamp(6.0, 300.0) * (dpi.max(72) as f32 / 72.0)).max(4.0);
-    let line_height_px = (font_px * 1.25).max(4.0);
+    let line_height_px = (font_px * line_height.clamp(0.9, 2.5)).max(4.0);
     let pad = padding_px.max(0.0).min((frame_w.min(frame_h) as f32) * 0.25);
     let inner_w = ((frame_w as f32) - pad * 2.0).max(4.0);
     let inner_h = ((frame_h as f32) - pad * 2.0).max(4.0);
 
     let origin_x = frame_x + pad.round() as i32;
     let origin_y = frame_y + pad.round() as i32;
-    let clip_max_x = (frame_x + frame_w as i32).min(sheet.width() as i32);
-    let clip_max_y = (frame_y + frame_h as i32).min(sheet.height() as i32);
-    let clip_min_x = frame_x.max(0);
-    let clip_min_y = frame_y.max(0);
 
     let cosmic_align = match align {
         TextAlignMode::Left => CosmicAlign::Left,
@@ -795,19 +968,26 @@ pub fn composite_text_onto_sheet(
         let mut borrowed = buffer.borrow_with(font_system);
         borrowed.set_size(Some(inner_w), Some(inner_h));
         borrowed.set_wrap(Wrap::WordOrGlyph);
-        borrowed.set_text(
-            text,
-            &Attrs::new().family(resolve_cosmic_family(font_family)),
-            Shaping::Advanced,
-            Some(cosmic_align),
-        );
+        let attrs = Attrs::new()
+            .family(resolve_cosmic_family(font_family))
+            .weight(if bold {
+                CosmicWeight::BOLD
+            } else {
+                CosmicWeight::NORMAL
+            })
+            .style(if italic {
+                CosmicStyle::Italic
+            } else {
+                CosmicStyle::Normal
+            });
+        borrowed.set_text(text, &attrs, Shaping::Advanced, Some(cosmic_align));
         borrowed.shape_until_scroll(false);
 
         borrowed.draw(
             swash_cache,
             CosmicColor::rgb(text_rgb[0], text_rgb[1], text_rgb[2]),
             |px_x, px_y, w, h, color| {
-                let src_a = color.a() as u32;
+                let src_a = ((color.a() as f32) * opacity).round().clamp(0.0, 255.0) as u32;
                 if src_a == 0 {
                     return;
                 }
@@ -835,6 +1015,34 @@ pub fn composite_text_onto_sheet(
                 }
             },
         );
+
+        if underline {
+            let ul_thick = (font_px * 0.065).round().max(1.0) as i32;
+            let ul_rgba = [text_rgb[0], text_rgb[1], text_rgb[2], 255];
+            for run in borrowed.layout_runs() {
+                if run.glyphs.is_empty() {
+                    continue;
+                }
+                let first_x = run.glyphs.first().map(|g| g.x).unwrap_or(0.0);
+                let last_end = run
+                    .glyphs
+                    .last()
+                    .map(|g| g.x + g.w)
+                    .unwrap_or(first_x + run.line_w);
+                let ux0 = (origin_x + first_x.floor() as i32).max(clip_min_x);
+                let ux1 = (origin_x + last_end.ceil() as i32).min(clip_max_x);
+                let uy0 = (origin_y + (run.line_y + font_px * 0.12).round() as i32).max(clip_min_y);
+                let uy1 = (uy0 + ul_thick).min(clip_max_y);
+                if ux0 < ux1 && uy0 < uy1 {
+                    for py in uy0..uy1 {
+                        for px in ux0..ux1 {
+                            let dst = sheet.get_pixel_mut(px as u32, py as u32);
+                            blend_pixel_over(&mut dst.0, ul_rgba, opacity);
+                        }
+                    }
+                }
+            }
+        }
     });
 }
 
@@ -1060,6 +1268,7 @@ mod tests {
             None,
             false,
             1.0,
+            1.0,
         );
 
         // Center pixel inside frame must match src color
@@ -1091,6 +1300,7 @@ mod tests {
             20.0,
             None,
             false,
+            1.0,
             1.0,
         );
 
@@ -1130,6 +1340,7 @@ mod tests {
             None,
             false,
             1.0,
+            1.0,
         );
         composite_item_onto_sheet(
             &mut sheet,
@@ -1146,6 +1357,7 @@ mod tests {
             0.0,
             None,
             false,
+            1.0,
             1.0,
         );
 
@@ -1192,6 +1404,7 @@ mod tests {
             Some(red_bg),
             false,
             1.0,
+            1.0,
         );
 
         assert_eq!(*sheet.get_pixel(25, 25), Rgba([220, 38, 38, 255]));
@@ -1222,6 +1435,7 @@ mod tests {
             None,
             true,
             1.0,
+            1.0,
         );
 
         // Item 2: at (120, 10), 100x100, rounded 0.0, cut_line: true
@@ -1240,6 +1454,7 @@ mod tests {
             0.0,
             None,
             true,
+            1.0,
             1.0,
         );
 
@@ -1293,27 +1508,125 @@ mod tests {
     #[test]
     fn test_composite_text_onto_sheet_draws_within_bounds() {
         let mut sheet = RgbaImage::from_pixel(400, 200, Rgba([255, 255, 255, 255]));
-        composite_text_onto_sheet(&mut sheet, "Hello KayePrint", 24.0, "", [17, 24, 39], TextAlignMode::Left, 300, 20, 20, 360, 160, 6.0);
+        composite_text_onto_sheet(
+            &mut sheet,
+            "Hello KayePrint",
+            24.0,
+            "",
+            [17, 24, 39],
+            TextAlignMode::Left,
+            true,
+            false,
+            true,
+            1.25,
+            Some([250, 240, 200, 255]),
+            1.0,
+            300,
+            20,
+            20,
+            360,
+            160,
+            6.0,
+        );
         let has_ink = (20..380)
             .flat_map(|x| (20..180).map(move |y| (x, y)))
-            .any(|(x, y)| sheet.get_pixel(x, y).0[0] < 200);
+            .any(|(x, y)| sheet.get_pixel(x, y).0[0] < 150);
         assert!(has_ink, "expected rasterized text pixels inside frame");
+        assert_eq!(sheet.get_pixel(21, 21).0, [250, 240, 200, 255]);
         assert_eq!(sheet.get_pixel(5, 5).0, [255, 255, 255, 255]);
 
-        let (w_short, h_short) =
-            measure_text_box_size_px("Hi", "Placeholder", 24.0, "", 300, None, 2000.0);
+        let (w_short, h_short) = measure_text_box_size_px(
+            "Hi",
+            "Placeholder",
+            24.0,
+            "",
+            false,
+            false,
+            1.25,
+            300,
+            None,
+            2000.0,
+        );
         let (w_long, _) = measure_text_box_size_px(
             "Hello KayePrint Wide Text",
             "Placeholder",
             24.0,
             "",
+            false,
+            false,
+            1.25,
             300,
             None,
             2000.0,
         );
-        let (w_bigger, h_bigger) =
-            measure_text_box_size_px("Hi", "Placeholder", 48.0, "", 300, None, 2000.0);
+        let (w_bigger, h_bigger) = measure_text_box_size_px(
+            "Hi",
+            "Placeholder",
+            48.0,
+            "",
+            false,
+            false,
+            1.25,
+            300,
+            None,
+            2000.0,
+        );
         assert!(w_long > w_short, "longer text should widen auto frame");
         assert!(w_bigger > w_short && h_bigger > h_short, "bigger font should expand auto frame");
+    }
+
+    #[test]
+    fn test_star_polygon_fills_exact_bounding_box() {
+        let verts = freeform_shape_polygon(FreeformShapeKind::Star, 100.0, 80.0);
+        assert_eq!(verts.len(), 10);
+        let min_x = verts.iter().map(|v| v.0).fold(f32::INFINITY, f32::min);
+        let max_x = verts.iter().map(|v| v.0).fold(f32::NEG_INFINITY, f32::max);
+        let min_y = verts.iter().map(|v| v.1).fold(f32::INFINITY, f32::min);
+        let max_y = verts.iter().map(|v| v.1).fold(f32::NEG_INFINITY, f32::max);
+        assert!(min_x.abs() < 1e-3);
+        assert!((max_x - 100.0).abs() < 1e-3);
+        assert!(min_y.abs() < 1e-3);
+        assert!((max_y - 80.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_composite_shape_stroke_line_and_opacity() {
+        let mut sheet = RgbaImage::from_pixel(120, 120, Rgba([255, 255, 255, 255]));
+        composite_shape_onto_sheet(
+            &mut sheet,
+            FreeformShapeKind::Rectangle,
+            [0, 0, 255, 255],
+            Some([255, 0, 0, 255]),
+            6.0,
+            0.0,
+            1.0,
+            10,
+            10,
+            100,
+            100,
+            0.0,
+        );
+        assert_eq!(*sheet.get_pixel(12, 50), Rgba([255, 0, 0, 255]));
+        assert_eq!(*sheet.get_pixel(60, 60), Rgba([0, 0, 255, 255]));
+
+        let mut line_sheet = RgbaImage::from_pixel(120, 60, Rgba([255, 255, 255, 255]));
+        composite_shape_onto_sheet(
+            &mut line_sheet,
+            FreeformShapeKind::Line,
+            [0, 0, 0, 255],
+            Some([0, 0, 0, 255]),
+            6.0,
+            0.0,
+            0.5,
+            10,
+            10,
+            100,
+            40,
+            0.0,
+        );
+        // Midpoint of horizontal line at y = 10 + 20 = 30 blended 50% black over white (~127)
+        let mid = line_sheet.get_pixel(60, 30).0[0];
+        assert!((120..=135).contains(&mid), "expected ~50% blended gray, got {mid}");
+        assert_eq!(*line_sheet.get_pixel(60, 12), Rgba([255, 255, 255, 255]));
     }
 }

@@ -20,7 +20,10 @@ use gpui_kit::{
 };
 
 use super::{
-    common::{ButtonSelectedExt as _, render_color_select, render_number_field, render_rounded_slider},
+    common::{
+        ButtonSelectedExt as _, render_color_select, render_number_field, render_opacity_slider,
+        render_rounded_slider,
+    },
     inspector_view::InspectorView,
 };
 use crate::canvas::model::{FreeformShapeKind, TextAlignMode};
@@ -246,6 +249,7 @@ pub fn render_freeform_panel(
                                             FreeformShapeKind::Triangle => IconName::Triangle,
                                             FreeformShapeKind::Diamond => IconName::Diamond,
                                             FreeformShapeKind::Star => IconName::Star,
+                                            FreeformShapeKind::Line => IconName::Minus,
                                         };
                                         Button::new(("add-shape-kind", kind as usize))
                                             .ghost()
@@ -302,7 +306,7 @@ pub fn render_freeform_panel(
                                         .text_color(cx.theme().muted_foreground),
                                 )
                                 .child(
-                                    ButtonGroup::new(("freeform-align-group", id))
+                                    ButtonGroup::new(("freeform-align-h-group", id))
                                         .outline()
                                         .with_size(Size::Medium)
                                         .w_full()
@@ -334,16 +338,7 @@ pub fn render_freeform_panel(
                                                 .tooltip(lang.tr("app.align_right_tooltip")),
                                         )
                                         .child(
-                                            Button::new("align-middle")
-                                                .flex_1()
-                                                .icon(
-                                                    Icon::new(IconName::AlignCenterVertical)
-                                                        .with_size(Size::Medium),
-                                                )
-                                                .tooltip(lang.tr("app.align_middle_tooltip")),
-                                        )
-                                        .child(
-                                            Button::new("align-dist")
+                                            Button::new("align-dist-h")
                                                 .flex_1()
                                                 .icon(
                                                     Icon::new(
@@ -361,10 +356,69 @@ pub fn render_freeform_panel(
                                                             0 => app.state.align_selected("left"),
                                                             1 => app.state.align_selected("center"),
                                                             2 => app.state.align_selected("right"),
-                                                            3 => app.state.align_selected("middle"),
-                                                            4 => app
+                                                            3 => app
                                                                 .state
-                                                                .align_selected("distribute"),
+                                                                .align_selected("distribute_h"),
+                                                            _ => {}
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    ButtonGroup::new(("freeform-align-v-group", id))
+                                        .outline()
+                                        .with_size(Size::Medium)
+                                        .w_full()
+                                        .child(
+                                            Button::new("align-top")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(IconName::AlignStartVertical)
+                                                        .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_top_tooltip")),
+                                        )
+                                        .child(
+                                            Button::new("align-middle")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(IconName::AlignCenterVertical)
+                                                        .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_middle_tooltip")),
+                                        )
+                                        .child(
+                                            Button::new("align-bottom")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(IconName::AlignEndVertical)
+                                                        .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_bottom_tooltip")),
+                                        )
+                                        .child(
+                                            Button::new("align-dist-v")
+                                                .flex_1()
+                                                .icon(
+                                                    Icon::new(IconName::AlignVerticalSpaceBetween)
+                                                        .with_size(Size::Medium),
+                                                )
+                                                .tooltip(lang.tr("app.align_dist_v_tooltip")),
+                                        )
+                                        .on_click(cx.listener(
+                                            |this, clicks: &Vec<usize>, _, cx| {
+                                                if let Some(&first) = clicks.first() {
+                                                    this.app.update(cx, |app, cx| {
+                                                        match first {
+                                                            0 => app.state.align_selected("top"),
+                                                            1 => app.state.align_selected("middle"),
+                                                            2 => app.state.align_selected("bottom"),
+                                                            3 => app
+                                                                .state
+                                                                .align_selected("distribute_v"),
                                                             _ => {}
                                                         }
                                                         cx.notify();
@@ -428,44 +482,178 @@ pub fn render_freeform_panel(
                                         })),
                                 )
                             })
-                        }),
+                        })
+                        .child(
+                            v_flex()
+                                .gap(px(4.0))
+                                .w_full()
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            Label::new(lang.tr("app.opacity"))
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                        .child(
+                                            Label::new(format!(
+                                                "{:.0}%",
+                                                item.opacity.clamp(0.05, 1.0) * 100.0
+                                            ))
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                        ),
+                                )
+                                .child(render_opacity_slider(
+                                    id,
+                                    item.opacity,
+                                    &sidebar.app,
+                                    window,
+                                    cx,
+                                )),
+                        ),
                 ),
             );
 
             // 4. Item-specific card: Selected Shape, Selected Text, or Selected Image
             if let Some(sb) = item.shape {
+                let is_line = sb.kind == FreeformShapeKind::Line;
+                let has_stroke = sb.stroke_color.is_some();
+                let stroke_col_cur = sb.stroke_color.unwrap_or_else(|| gpui_kit::rgb(0x1E293B).into());
                 col.child(
                     GroupBox::new().outline().title(lang.tr("app.selected_shape")).child(
                         v_flex()
                             .gap(px(10.0))
                             .w_full()
-                            .child(
-                                v_flex()
-                                    .gap(px(4.0))
-                                    .w_full()
-                                    .child(
-                                        Label::new(lang.tr("app.fill_color"))
-                                            .text_sm()
-                                            .text_color(cx.theme().muted_foreground),
-                                    )
-                                    .child(render_color_select(
-                                        ("freeform-shape-color", id),
-                                        Some(sb.fill_color),
-                                        sb.fill_color,
-                                        &sidebar.app,
-                                        window,
-                                        cx,
-                                        move |color, app, cx| {
-                                            if let Some(col) = color
-                                                && let Some(it) = app.state.find_item_mut(id)
-                                                && let Some(shape) = &mut it.shape
-                                            {
-                                                shape.fill_color = col;
-                                                cx.notify();
-                                            }
-                                        },
-                                    )),
-                            )
+                            .when(!is_line, |v| {
+                                v.child(
+                                    v_flex()
+                                        .gap(px(4.0))
+                                        .w_full()
+                                        .child(
+                                            Label::new(lang.tr("app.fill_color"))
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                        .child(render_color_select(
+                                            ("freeform-shape-color", id),
+                                            Some(sb.fill_color),
+                                            sb.fill_color,
+                                            &sidebar.app,
+                                            window,
+                                            cx,
+                                            move |color, app, cx| {
+                                                if let Some(col) = color
+                                                    && let Some(it) = app.state.find_item_mut(id)
+                                                    && let Some(shape) = &mut it.shape
+                                                {
+                                                    shape.fill_color = col;
+                                                    cx.notify();
+                                                }
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    Checkbox::new(("freeform-shape-stroke-toggle", id))
+                                        .label(lang.tr("app.stroke_enable"))
+                                        .checked(has_stroke)
+                                        .on_change(cx.listener(move |this, checked: &bool, _, cx| {
+                                            let enabled = *checked;
+                                            this.app.update(cx, |app, cx| {
+                                                app.state.push_freeform_undo();
+                                                if let Some(it) = app.state.find_item_mut(id)
+                                                    && let Some(shape) = &mut it.shape
+                                                {
+                                                    if enabled {
+                                                        if shape.stroke_color.is_none() {
+                                                            shape.stroke_color =
+                                                                Some(gpui_kit::rgb(0x1E293B).into());
+                                                        }
+                                                        if shape.stroke_width <= 0.5 {
+                                                            shape.stroke_width = 4.0;
+                                                        }
+                                                    } else {
+                                                        shape.stroke_color = None;
+                                                    }
+                                                    cx.notify();
+                                                }
+                                            });
+                                        })),
+                                )
+                            })
+                            .when(is_line || has_stroke, |v| {
+                                v.child(
+                                    v_flex()
+                                        .gap(px(4.0))
+                                        .w_full()
+                                        .child(
+                                            Label::new(lang.tr("app.stroke_color"))
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                        .child(render_color_select(
+                                            ("freeform-shape-stroke-color", id),
+                                            Some(stroke_col_cur),
+                                            stroke_col_cur,
+                                            &sidebar.app,
+                                            window,
+                                            cx,
+                                            move |color, app, cx| {
+                                                if let Some(col) = color
+                                                    && let Some(it) = app.state.find_item_mut(id)
+                                                    && let Some(shape) = &mut it.shape
+                                                {
+                                                    shape.stroke_color = Some(col);
+                                                    if shape.kind == FreeformShapeKind::Line {
+                                                        shape.fill_color = col;
+                                                    }
+                                                    cx.notify();
+                                                }
+                                            },
+                                        )),
+                                )
+                                .child(render_number_field(
+                                    ("freeform-shape-stroke-width", id),
+                                    lang.tr("app.stroke_width"),
+                                    sb.stroke_width,
+                                    1.0,
+                                    1.0,
+                                    40.0,
+                                    0,
+                                    "px",
+                                    &sidebar.app,
+                                    window,
+                                    cx,
+                                    move |val, app, cx| {
+                                        if let Some(it) = app.state.find_item_mut(id)
+                                            && let Some(shape) = &mut it.shape
+                                        {
+                                            shape.stroke_width = val;
+                                            cx.notify();
+                                        }
+                                    },
+                                ))
+                            })
+                            .child(render_number_field(
+                                ("freeform-shape-rotation", id),
+                                lang.tr("app.rotation"),
+                                item.rotation_deg,
+                                5.0,
+                                0.0,
+                                360.0,
+                                0,
+                                "°",
+                                &sidebar.app,
+                                window,
+                                cx,
+                                move |val, app, cx| {
+                                    if let Some(it) = app.state.find_item_mut(id) {
+                                        it.rotation_deg = val.rem_euclid(360.0);
+                                        cx.notify();
+                                    }
+                                },
+                            ))
                             .when(sb.kind == FreeformShapeKind::Rectangle, |v| {
                                 v.child(
                                     v_flex()
@@ -497,6 +685,8 @@ pub fn render_freeform_panel(
                     ),
                 )
             } else if let Some(tb) = item.text {
+                let has_text_bg = item.bg_color.is_some();
+                let text_bg_cur = item.bg_color.unwrap_or_else(|| gpui_kit::rgb(0xFEF3C7).into());
                 col.child(
                     GroupBox::new().outline().title(lang.tr("app.selected_text")).child(
                         v_flex()
@@ -537,28 +727,112 @@ pub fn render_freeform_panel(
                                         cx,
                                     )),
                             )
-                            .child(render_number_field(
-                                ("freeform-text-font-size", id),
-                                lang.tr("app.font_size"),
-                                tb.font_size_pt,
-                                1.0,
-                                6.0,
-                                300.0,
-                                0,
-                                "pt",
-                                &sidebar.app,
-                                window,
-                                cx,
-                                move |val, app, cx| {
-                                    if let Some(it) = app.state.find_item_mut(id)
-                                        && let Some(txt) = &mut it.text
-                                    {
-                                        txt.font_size_pt = val;
-                                        app.state.sync_text_item_size(id);
-                                        cx.notify();
-                                    }
-                                },
-                            ))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .w_full()
+                                    .child(div().flex_1().child(render_number_field(
+                                        ("freeform-text-font-size", id),
+                                        lang.tr("app.font_size"),
+                                        tb.font_size_pt,
+                                        1.0,
+                                        6.0,
+                                        300.0,
+                                        0,
+                                        "pt",
+                                        &sidebar.app,
+                                        window,
+                                        cx,
+                                        move |val, app, cx| {
+                                            if let Some(it) = app.state.find_item_mut(id)
+                                                && let Some(txt) = &mut it.text
+                                            {
+                                                txt.font_size_pt = val;
+                                                app.state.sync_text_item_size(id);
+                                                cx.notify();
+                                            }
+                                        },
+                                    )))
+                                    .child(div().flex_1().child(render_number_field(
+                                        ("freeform-text-line-height", id),
+                                        lang.tr("app.line_height"),
+                                        tb.line_height,
+                                        0.05,
+                                        0.9,
+                                        2.5,
+                                        2,
+                                        "x",
+                                        &sidebar.app,
+                                        window,
+                                        cx,
+                                        move |val, app, cx| {
+                                            if let Some(it) = app.state.find_item_mut(id)
+                                                && let Some(txt) = &mut it.text
+                                            {
+                                                txt.line_height = val;
+                                                app.state.sync_text_item_size(id);
+                                                cx.notify();
+                                            }
+                                        },
+                                    ))),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap(px(4.0))
+                                    .w_full()
+                                    .child(
+                                        Label::new(lang.tr("app.text_style"))
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .child(
+                                        ButtonGroup::new(("freeform-text-style", id))
+                                            .outline()
+                                            .multiple(true)
+                                            .with_size(Size::Medium)
+                                            .w_full()
+                                            .child(
+                                                Button::new("text-style-bold")
+                                                    .flex_1()
+                                                    .icon(Icon::new(IconName::Bold).with_size(Size::Medium))
+                                                    .neutral_selected(tb.bold, cx)
+                                                    .tooltip(lang.tr("app.bold_tooltip")),
+                                            )
+                                            .child(
+                                                Button::new("text-style-italic")
+                                                    .flex_1()
+                                                    .icon(Icon::new(IconName::Italic).with_size(Size::Medium))
+                                                    .neutral_selected(tb.italic, cx)
+                                                    .tooltip(lang.tr("app.italic_tooltip")),
+                                            )
+                                            .child(
+                                                Button::new("text-style-underline")
+                                                    .flex_1()
+                                                    .icon(Icon::new(IconName::Underline).with_size(Size::Medium))
+                                                    .neutral_selected(tb.underline, cx)
+                                                    .tooltip(lang.tr("app.underline_tooltip")),
+                                            )
+                                            .on_click(cx.listener(
+                                                move |this, selected: &Vec<usize>, _, cx| {
+                                                    let b = selected.contains(&0);
+                                                    let it_s = selected.contains(&1);
+                                                    let u = selected.contains(&2);
+                                                    this.app.update(cx, |app, cx| {
+                                                        app.state.push_freeform_undo();
+                                                        if let Some(it) = app.state.find_item_mut(id)
+                                                            && let Some(txt) = &mut it.text
+                                                        {
+                                                            txt.bold = b;
+                                                            txt.italic = it_s;
+                                                            txt.underline = u;
+                                                            app.state.sync_text_item_size(id);
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                },
+                                            )),
+                                    ),
+                            )
                             .child(
                                 v_flex()
                                     .gap(px(4.0))
@@ -577,28 +851,28 @@ pub fn render_freeform_panel(
                                                 Button::new("text-align-left")
                                                     .flex_1()
                                                     .icon(Icon::new(IconName::TextAlignStart).with_size(Size::Medium))
-                                                    .primary_selected(tb.align == TextAlignMode::Left, cx)
+                                                    .neutral_selected(tb.align == TextAlignMode::Left, cx)
                                                     .tooltip(lang.tr("app.align_left_tooltip")),
                                             )
                                             .child(
                                                 Button::new("text-align-center")
                                                     .flex_1()
                                                     .icon(Icon::new(IconName::TextAlignCenter).with_size(Size::Medium))
-                                                    .primary_selected(tb.align == TextAlignMode::Center, cx)
+                                                    .neutral_selected(tb.align == TextAlignMode::Center, cx)
                                                     .tooltip(lang.tr("app.align_center_tooltip")),
                                             )
                                             .child(
                                                 Button::new("text-align-right")
                                                     .flex_1()
                                                     .icon(Icon::new(IconName::TextAlignEnd).with_size(Size::Medium))
-                                                    .primary_selected(tb.align == TextAlignMode::Right, cx)
+                                                    .neutral_selected(tb.align == TextAlignMode::Right, cx)
                                                     .tooltip(lang.tr("app.align_right_tooltip")),
                                             )
                                             .child(
                                                 Button::new("text-align-justify")
                                                     .flex_1()
                                                     .icon(Icon::new(IconName::TextAlignJustify).with_size(Size::Medium))
-                                                    .primary_selected(tb.align == TextAlignMode::Justified, cx)
+                                                    .neutral_selected(tb.align == TextAlignMode::Justified, cx)
                                                     .tooltip(lang.tr("app.text_align_justify")),
                                             )
                                             .on_click(cx.listener(
@@ -649,7 +923,42 @@ pub fn render_freeform_panel(
                                             }
                                         },
                                     )),
-                            ),
+                            )
+                            .child(
+                                Checkbox::new(("freeform-text-bg-toggle", id))
+                                    .label(lang.tr("app.text_bg_enable"))
+                                    .checked(has_text_bg)
+                                    .on_change(cx.listener(move |this, checked: &bool, _, cx| {
+                                        let enabled = *checked;
+                                        this.app.update(cx, |app, cx| {
+                                            app.state.push_freeform_undo();
+                                            if let Some(it) = app.state.find_item_mut(id) {
+                                                it.bg_color = if enabled {
+                                                    Some(gpui_kit::rgb(0xFEF3C7).into())
+                                                } else {
+                                                    None
+                                                };
+                                                cx.notify();
+                                            }
+                                        });
+                                    })),
+                            )
+                            .when(has_text_bg, |v| {
+                                v.child(render_color_select(
+                                    ("freeform-text-bg-color", id),
+                                    Some(text_bg_cur),
+                                    text_bg_cur,
+                                    &sidebar.app,
+                                    window,
+                                    cx,
+                                    move |color, app, cx| {
+                                        if let Some(it) = app.state.find_item_mut(id) {
+                                            it.bg_color = color;
+                                            cx.notify();
+                                        }
+                                    },
+                                ))
+                            }),
                     ),
                 )
             } else {

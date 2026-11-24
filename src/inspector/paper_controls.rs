@@ -226,13 +226,13 @@ pub fn render_paper_settings_panel(
                             Button::new("btn-col-color")
                                 .flex_1()
                                 .label(lang.tr("app.color"))
-                                .primary_selected(!is_grayscale, cx),
+                                .neutral_selected(!is_grayscale, cx),
                         )
                         .child(
                             Button::new("btn-col-gray")
                                 .flex_1()
                                 .label(lang.tr("app.grayscale"))
-                                .primary_selected(is_grayscale, cx),
+                                .neutral_selected(is_grayscale, cx),
                         )
                         .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
                             if let Some(&first) = clicks.first() {
@@ -327,13 +327,13 @@ pub fn render_paper_settings_panel(
                             Button::new("btn-portrait")
                                 .flex_1()
                                 .label(lang.tr("app.portrait"))
-                                .primary_selected(orientation == Orientation::Portrait, cx),
+                                .neutral_selected(orientation == Orientation::Portrait, cx),
                         )
                         .child(
                             Button::new("btn-landscape")
                                 .flex_1()
                                 .label(lang.tr("app.landscape"))
-                                .primary_selected(orientation == Orientation::Landscape, cx),
+                                .neutral_selected(orientation == Orientation::Landscape, cx),
                         )
                         .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
                             if let Some(&first) = clicks.first() {
@@ -397,7 +397,7 @@ pub fn render_paper_settings_panel(
                                 Button::new(("fit-mode", fit as usize))
                                     .flex_1()
                                     .label(fit.label_for(lang))
-                                    .primary_selected(active_fit == fit, cx)
+                                    .neutral_selected(active_fit == fit, cx)
                             }))
                             .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
                                 if let Some(&first) = clicks.first()

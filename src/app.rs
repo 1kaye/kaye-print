@@ -519,9 +519,12 @@ pub struct StudioState {
     // Mode 3: Freeform Collage
     pub free_items: Vec<CanvasItem>,
     pub snap_to_grid: bool,
+    pub free_undo_stack: Vec<Vec<CanvasItem>>,
+    pub free_redo_stack: Vec<Vec<CanvasItem>>,
 
     // Selection & Canvas Viewport
     pub selected_id: Option<u64>,
+    pub selected_ids: Vec<u64>,
     pub editing_layer_id: Option<u64>,
     pub editing_text_id: Option<u64>,
     pub context_menu: Option<ContextMenuState>,
@@ -566,6 +569,9 @@ impl StudioState {
             transform: default_tf.clone(),
             corner_radius: 0.0,
             bg_color: None,
+            opacity: 1.0,
+            visible: true,
+            locked: false,
             custom_name: None,
         };
 
@@ -594,7 +600,10 @@ impl StudioState {
             id_photo_free_move: false,
             free_items: Vec::new(),
             snap_to_grid: false,
+            free_undo_stack: Vec::new(),
+            free_redo_stack: Vec::new(),
             selected_id: None,
+            selected_ids: Vec::new(),
             editing_layer_id: None,
             editing_text_id: None,
             context_menu: None,
@@ -650,6 +659,126 @@ impl StudioState {
     pub fn selected_item(&self) -> Option<&CanvasItem> {
         let id = self.selected_id?;
         self.find_item(id)
+    }
+
+    pub fn is_item_selected(&self, id: u64) -> bool {
+        self.selected_id == Some(id) || self.selected_ids.contains(&id)
+    }
+
+    pub fn select_single(&mut self, id: Option<u64>) {
+        self.selected_id = id;
+        self.selected_ids.clear();
+        if let Some(i) = id {
+            self.selected_ids.push(i);
+        }
+    }
+
+    pub fn toggle_select_item(&mut self, id: u64) {
+        if let Some(pos) = self.selected_ids.iter().position(|&x| x == id) {
+            self.selected_ids.remove(pos);
+            if self.selected_id == Some(id) {
+                self.selected_id = self.selected_ids.last().copied();
+            }
+        } else {
+            if let Some(cur) = self.selected_id
+                && !self.selected_ids.contains(&cur)
+            {
+                self.selected_ids.push(cur);
+            }
+            self.selected_ids.push(id);
+            self.selected_id = Some(id);
+        }
+    }
+
+    pub fn select_all_freeform(&mut self) {
+        if self.mode != LayoutMode::Freeform {
+            return;
+        }
+        self.selected_ids = self
+            .free_items
+            .iter()
+            .filter(|i| i.visible)
+            .map(|i| i.id)
+            .collect();
+        self.selected_id = self.selected_ids.last().copied();
+    }
+
+    pub fn selected_freeform_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self
+            .selected_ids
+            .iter()
+            .copied()
+            .filter(|id| self.free_items.iter().any(|i| i.id == *id))
+            .collect();
+        if let Some(primary) = self.selected_id
+            && !ids.contains(&primary)
+            && self.free_items.iter().any(|i| i.id == primary)
+        {
+            ids.push(primary);
+        }
+        ids
+    }
+
+    pub fn push_freeform_undo(&mut self) {
+        if self.mode != LayoutMode::Freeform {
+            return;
+        }
+        const MAX_FREEFORM_UNDO: usize = 40;
+        if self.free_undo_stack.len() >= MAX_FREEFORM_UNDO {
+            self.free_undo_stack.remove(0);
+        }
+        self.free_undo_stack.push(self.free_items.clone());
+        self.free_redo_stack.clear();
+    }
+
+    pub fn can_undo_freeform(&self) -> bool {
+        self.mode == LayoutMode::Freeform && !self.free_undo_stack.is_empty()
+    }
+
+    pub fn can_redo_freeform(&self) -> bool {
+        self.mode == LayoutMode::Freeform && !self.free_redo_stack.is_empty()
+    }
+
+    pub fn undo_freeform(&mut self) -> bool {
+        if self.mode != LayoutMode::Freeform {
+            return false;
+        }
+        let Some(prev) = self.free_undo_stack.pop() else {
+            return false;
+        };
+        self.free_redo_stack.push(std::mem::replace(&mut self.free_items, prev));
+        self.editing_text_id = None;
+        self.editing_layer_id = None;
+        self.selected_ids
+            .retain(|id| self.free_items.iter().any(|i| i.id == *id));
+        if self
+            .selected_id
+            .is_some_and(|id| !self.free_items.iter().any(|i| i.id == id))
+        {
+            self.selected_id = self.selected_ids.last().copied();
+        }
+        true
+    }
+
+    pub fn redo_freeform(&mut self) -> bool {
+        if self.mode != LayoutMode::Freeform {
+            return false;
+        }
+        let Some(next) = self.free_redo_stack.pop() else {
+            return false;
+        };
+        self.free_undo_stack.push(std::mem::replace(&mut self.free_items, next));
+        self.editing_text_id = None;
+        self.editing_layer_id = None;
+        self.selected_ids
+            .retain(|id| self.free_items.iter().any(|i| i.id == *id));
+        if self
+            .selected_id
+            .is_some_and(|id| !self.free_items.iter().any(|i| i.id == id))
+        {
+            self.selected_id = self.selected_ids.last().copied();
+        }
+        true
     }
 
     fn natural_freeform_size(paper: &PaperConfig, asset: &ImageAsset) -> (f32, f32) {
@@ -725,20 +854,60 @@ impl StudioState {
             }
             LayoutMode::Freeform => {
                 if let Some(item) = self.free_items.iter().find(|i| i.id == id).cloned() {
+                    self.push_freeform_undo();
                     let new_id = self.alloc_id();
                     let mut copy = item;
                     copy.id = new_id;
+                    copy.locked = false;
                     copy.x_px += 30.0;
                     copy.y_px += 30.0;
                     Self::clamp_item_to_safe_margin(&self.paper, &mut copy);
                     self.free_items.push(copy);
-                    self.selected_id = Some(new_id);
+                    self.select_single(Some(new_id));
                 }
             }
         }
     }
 
+    pub fn duplicate_selected(&mut self) {
+        if self.mode != LayoutMode::Freeform {
+            if let Some(id) = self.selected_id {
+                self.duplicate_item(id);
+            }
+            return;
+        }
+        let ids = self.selected_freeform_ids();
+        if ids.is_empty() {
+            return;
+        }
+        self.push_freeform_undo();
+        let mut new_ids = Vec::with_capacity(ids.len());
+        let copies: Vec<CanvasItem> = self
+            .free_items
+            .iter()
+            .filter(|i| ids.contains(&i.id))
+            .cloned()
+            .collect();
+        for mut copy in copies {
+            let new_id = self.alloc_id();
+            copy.id = new_id;
+            copy.locked = false;
+            copy.x_px += 30.0;
+            copy.y_px += 30.0;
+            Self::clamp_item_to_safe_margin(&self.paper, &mut copy);
+            self.free_items.push(copy);
+            new_ids.push(new_id);
+        }
+        self.selected_id = new_ids.last().copied();
+        self.selected_ids = new_ids;
+    }
+
     pub fn delete_item(&mut self, id: u64) {
+        if self.mode == LayoutMode::Freeform
+            && self.free_items.iter().any(|i| i.id == id && i.locked)
+        {
+            return;
+        }
         if self.context_menu.as_ref().map(|c| c.item_id) == Some(id) {
             self.context_menu = None;
         }
@@ -756,6 +925,7 @@ impl StudioState {
                 if self.selected_id == Some(id) {
                     self.selected_id = self.id_photo_items.last().map(|i| i.id);
                 }
+                self.selected_ids.retain(|&x| x != id);
                 if self.id_photo_items.is_empty() {
                     self.id_photo_items.shrink_to_fit();
                 }
@@ -764,14 +934,58 @@ impl StudioState {
                 }
             }
             LayoutMode::Freeform => {
+                if self.free_items.iter().any(|i| i.id == id) {
+                    self.push_freeform_undo();
+                }
                 self.free_items.retain(|i| i.id != id);
+                self.selected_ids.retain(|&x| x != id);
                 if self.selected_id == Some(id) {
-                    self.selected_id = self.free_items.last().map(|i| i.id);
+                    self.selected_id = self
+                        .selected_ids
+                        .last()
+                        .copied()
+                        .or_else(|| self.free_items.last().map(|i| i.id));
                 }
                 if self.free_items.is_empty() {
                     self.free_items.shrink_to_fit();
                 }
             }
+        }
+    }
+
+    pub fn delete_selected(&mut self) {
+        if self.mode != LayoutMode::Freeform {
+            if let Some(id) = self.selected_id {
+                self.delete_item(id);
+            }
+            return;
+        }
+        let ids: Vec<u64> = self
+            .selected_freeform_ids()
+            .into_iter()
+            .filter(|id| self.free_items.iter().any(|i| i.id == *id && !i.locked))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.push_freeform_undo();
+        if self.editing_text_id.is_some_and(|id| ids.contains(&id)) {
+            self.editing_text_id = None;
+        }
+        if self.context_menu.as_ref().is_some_and(|c| ids.contains(&c.item_id)) {
+            self.context_menu = None;
+        }
+        self.free_items.retain(|i| !ids.contains(&i.id));
+        self.selected_ids.retain(|id| !ids.contains(id));
+        if self.selected_id.is_some_and(|id| ids.contains(&id)) {
+            self.selected_id = self
+                .selected_ids
+                .last()
+                .copied()
+                .or_else(|| self.free_items.last().map(|i| i.id));
+        }
+        if self.free_items.is_empty() {
+            self.free_items.shrink_to_fit();
         }
     }
 
@@ -803,10 +1017,12 @@ impl StudioState {
             }
             LayoutMode::Freeform => {
                 self.free_items.clear();
+                self.free_undo_stack.clear();
+                self.free_redo_stack.clear();
             }
         }
         self.mode = new_mode;
-        self.selected_id = None;
+        self.select_single(None);
         self.editing_text_id = None;
         self.status_message = self
             .language
@@ -914,6 +1130,9 @@ impl StudioState {
                 transform: ImageTransform::default(),
                 corner_radius: 0.0,
                 bg_color: None,
+                opacity: 1.0,
+                visible: true,
+                locked: false,
                 custom_name: None,
             });
         }
@@ -951,6 +1170,9 @@ impl StudioState {
     }
 
     pub fn insert_loaded_freeform_assets(&mut self, assets: Vec<ImageAsset>) {
+        if !assets.is_empty() {
+            self.push_freeform_undo();
+        }
         let (ml, mt, _, _) = self.paper.printable_bounds_px();
         let paper = self.paper.clone();
         let count = assets.len();
@@ -977,11 +1199,14 @@ impl StudioState {
                 transform: ImageTransform::default(),
                 corner_radius: 0.0,
                 bg_color: None,
+                opacity: 1.0,
+                visible: true,
+                locked: false,
                 custom_name: None,
             };
             Self::clamp_item_to_safe_margin(&paper, &mut item);
             self.free_items.push(item);
-            self.selected_id = Some(id);
+            self.select_single(Some(id));
         }
         if count > 0 {
             self.status_message = self.language.added_freeform_photos(count);
@@ -1005,6 +1230,9 @@ impl StudioState {
                 &fallback,
                 tb.font_size_pt,
                 &tb.font_family,
+                tb.bold,
+                tb.italic,
+                tb.line_height,
                 paper.dpi,
                 fixed_w,
                 pw,
@@ -1023,6 +1251,7 @@ impl StudioState {
         if self.mode != LayoutMode::Freeform {
             return;
         }
+        self.push_freeform_undo();
         let (ml, mt, _, _) = self.paper.printable_bounds_px();
         let id = self.alloc_id();
         let offset = self.free_items.len() as f32 * 32.0;
@@ -1046,17 +1275,24 @@ impl StudioState {
                 font_family: default_font_family.into(),
                 color: gpui_kit::rgb(0x111827).into(),
                 align: TextAlignMode::Left,
+                bold: false,
+                italic: false,
+                underline: false,
+                line_height: 1.25,
                 manual_size: false,
             }),
             shape: None,
             transform: ImageTransform::default(),
             corner_radius: 0.0,
             bg_color: None,
+            opacity: 1.0,
+            visible: true,
+            locked: false,
             custom_name: None,
         };
         self.free_items.push(item);
         self.sync_text_item_size(id);
-        self.selected_id = Some(id);
+        self.select_single(Some(id));
         self.editing_text_id = None;
         self.status_message = self.language.tr("app.added_freeform_text");
     }
@@ -1065,16 +1301,23 @@ impl StudioState {
         if self.mode != LayoutMode::Freeform {
             return;
         }
+        self.push_freeform_undo();
         let (ml, mt, _, _) = self.paper.printable_bounds_px();
         let paper = self.paper.clone();
         let id = self.alloc_id();
         let offset = self.free_items.len() as f32 * 32.0;
+        let (init_w, init_h, fill, stroke_col, stroke_w) = if kind == FreeformShapeKind::Line {
+            let col: gpui_kit::Hsla = gpui_kit::rgb(0x1E293B).into();
+            (500.0, 36.0, col, Some(col), 6.0)
+        } else {
+            (300.0, 300.0, gpui_kit::rgb(0x3B82F6).into(), None, 4.0)
+        };
         let mut item = CanvasItem {
             id,
             x_px: ml + 20.0 + offset,
             y_px: mt + 20.0 + offset,
-            width_px: 300.0,
-            height_px: 300.0,
+            width_px: init_w,
+            height_px: init_h,
             rotation_deg: 0.0,
             lock_aspect: false,
             shape_kind: ShapeKind::Rectangle,
@@ -1086,16 +1329,21 @@ impl StudioState {
             text: None,
             shape: Some(ShapeBoxData {
                 kind,
-                fill_color: gpui_kit::rgb(0x3B82F6).into(),
+                fill_color: fill,
+                stroke_color: stroke_col,
+                stroke_width: stroke_w,
             }),
             transform: ImageTransform::default(),
             corner_radius: 0.0,
             bg_color: None,
+            opacity: 1.0,
+            visible: true,
+            locked: false,
             custom_name: None,
         };
         Self::clamp_item_to_safe_margin(&paper, &mut item);
         self.free_items.push(item);
-        self.selected_id = Some(id);
+        self.select_single(Some(id));
         self.editing_text_id = None;
         self.status_message = self.language.tr("app.added_freeform_shape");
     }
@@ -1159,21 +1407,23 @@ impl StudioState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn bring_to_front(&mut self, id: u64) {
         if self.mode == LayoutMode::Freeform
             && let Some(pos) = self.free_items.iter().position(|i| i.id == id)
+            && pos + 1 < self.free_items.len()
         {
+            self.push_freeform_undo();
             let item = self.free_items.remove(pos);
             self.free_items.push(item);
         }
     }
 
-    #[allow(dead_code)]
     pub fn send_to_back(&mut self, id: u64) {
         if self.mode == LayoutMode::Freeform
             && let Some(pos) = self.free_items.iter().position(|i| i.id == id)
+            && pos > 0
         {
+            self.push_freeform_undo();
             let item = self.free_items.remove(pos);
             self.free_items.insert(0, item);
         }
@@ -1186,6 +1436,7 @@ impl StudioState {
         let src_pos = self.free_items.iter().position(|i| i.id == src_id);
         let target_pos = self.free_items.iter().position(|i| i.id == target_id);
         if let (Some(src_idx), Some(target_idx)) = (src_pos, target_pos) {
+            self.push_freeform_undo();
             let item = self.free_items.remove(src_idx);
             self.free_items.insert(target_idx, item);
         }
@@ -1196,6 +1447,7 @@ impl StudioState {
             && let Some(pos) = self.free_items.iter().position(|i| i.id == id)
         {
             if pos + 1 < self.free_items.len() {
+                self.push_freeform_undo();
                 self.free_items.swap(pos, pos + 1);
             }
         }
@@ -1206,12 +1458,16 @@ impl StudioState {
             && let Some(pos) = self.free_items.iter().position(|i| i.id == id)
         {
             if pos > 0 {
+                self.push_freeform_undo();
                 self.free_items.swap(pos, pos - 1);
             }
         }
     }
 
     pub fn rename_item(&mut self, id: u64, new_name: impl Into<String>) {
+        if self.mode == LayoutMode::Freeform {
+            self.push_freeform_undo();
+        }
         if let Some(item) = self.find_item_mut(id) {
             let name = new_name.into();
             let trimmed = name.trim();
@@ -1223,42 +1479,194 @@ impl StudioState {
         }
     }
 
+    pub fn toggle_item_visible(&mut self, id: u64) {
+        if self.mode != LayoutMode::Freeform {
+            return;
+        }
+        if self.free_items.iter().any(|i| i.id == id) {
+            self.push_freeform_undo();
+        }
+        if let Some(item) = self.free_items.iter_mut().find(|i| i.id == id) {
+            item.visible = !item.visible;
+            if !item.visible && self.editing_text_id == Some(id) {
+                self.editing_text_id = None;
+            }
+        }
+    }
+
+    pub fn toggle_item_locked(&mut self, id: u64) {
+        if self.mode != LayoutMode::Freeform {
+            return;
+        }
+        if self.free_items.iter().any(|i| i.id == id) {
+            self.push_freeform_undo();
+        }
+        if let Some(item) = self.free_items.iter_mut().find(|i| i.id == id) {
+            item.locked = !item.locked;
+            if item.locked && self.editing_text_id == Some(id) {
+                self.editing_text_id = None;
+            }
+        }
+    }
+
+    pub fn nudge_selected(&mut self, dx_px: f32, dy_px: f32) -> bool {
+        let paper = self.paper.clone();
+        match self.mode {
+            LayoutMode::Freeform => {
+                let target_ids: Vec<u64> = self
+                    .selected_freeform_ids()
+                    .into_iter()
+                    .filter(|id| {
+                        self.free_items
+                            .iter()
+                            .any(|i| i.id == *id && !i.locked && i.visible)
+                    })
+                    .collect();
+                if target_ids.is_empty() {
+                    return false;
+                }
+                self.push_freeform_undo();
+                for item in &mut self.free_items {
+                    if target_ids.contains(&item.id) {
+                        item.x_px += dx_px;
+                        item.y_px += dy_px;
+                        Self::clamp_item_to_safe_margin(&paper, item);
+                    }
+                }
+                true
+            }
+            LayoutMode::IdPhoto if self.id_photo_free_move => {
+                if let Some(id) = self.selected_id
+                    && let Some(item) = self.id_photo_items.iter_mut().find(|i| i.id == id)
+                {
+                    item.x_px += dx_px;
+                    item.y_px += dy_px;
+                    Self::clamp_item_to_safe_margin(&paper, item);
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub fn align_selected(&mut self, align: &'static str) {
         let (ml, mt, pw, ph) = self.paper.printable_bounds_px();
         let paper = self.paper.clone();
         if self.mode != LayoutMode::Freeform {
             return;
         }
-        if align == "distribute" {
-            let count = self.free_items.len();
-            if count < 3 {
+        let selected_unlocked: Vec<u64> = self
+            .selected_freeform_ids()
+            .into_iter()
+            .filter(|id| {
+                self.free_items
+                    .iter()
+                    .any(|i| i.id == *id && !i.locked && i.visible)
+            })
+            .collect();
+
+        if align == "distribute" || align == "distribute_h" || align == "distribute_v" {
+            let mut indices: Vec<usize> = if selected_unlocked.len() >= 3 {
+                self.free_items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, i)| selected_unlocked.contains(&i.id))
+                    .map(|(idx, _)| idx)
+                    .collect()
+            } else {
+                self.free_items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, i)| !i.locked && i.visible)
+                    .map(|(idx, _)| idx)
+                    .collect()
+            };
+            if indices.len() < 3 {
                 return;
             }
-            self.free_items
-                .sort_by(|a, b| a.x_px.partial_cmp(&b.x_px).unwrap());
-            let first_x = self.free_items.first().unwrap().x_px;
-            let last_item = self.free_items.last().unwrap();
-            let total_span = (last_item.x_px + last_item.width_px) - first_x;
-            let total_w: f32 = self.free_items.iter().map(|i| i.width_px).sum();
-            let free_space = (total_span - total_w).max(0.0);
-            let gap = free_space / (count - 1) as f32;
-            let mut cur_x = first_x;
-            for item in &mut self.free_items {
-                item.x_px = cur_x;
-                cur_x += item.width_px + gap;
-                Self::clamp_item_to_safe_margin(&paper, item);
+            self.push_freeform_undo();
+            let horizontal = align != "distribute_v";
+            if horizontal {
+                indices.sort_by(|&a, &b| {
+                    self.free_items[a]
+                        .x_px
+                        .total_cmp(&self.free_items[b].x_px)
+                });
+                let first_x = self.free_items[indices[0]].x_px;
+                let last = &self.free_items[*indices.last().unwrap()];
+                let total_span = (last.x_px + last.width_px) - first_x;
+                let total_w: f32 = indices.iter().map(|&idx| self.free_items[idx].width_px).sum();
+                let gap = (total_span - total_w).max(0.0) / (indices.len() - 1) as f32;
+                let mut cur_x = first_x;
+                for idx in indices {
+                    let item = &mut self.free_items[idx];
+                    item.x_px = cur_x;
+                    cur_x += item.width_px + gap;
+                    Self::clamp_item_to_safe_margin(&paper, item);
+                }
+            } else {
+                indices.sort_by(|&a, &b| {
+                    self.free_items[a]
+                        .y_px
+                        .total_cmp(&self.free_items[b].y_px)
+                });
+                let first_y = self.free_items[indices[0]].y_px;
+                let last = &self.free_items[*indices.last().unwrap()];
+                let total_span = (last.y_px + last.height_px) - first_y;
+                let total_h: f32 = indices
+                    .iter()
+                    .map(|&idx| self.free_items[idx].height_px)
+                    .sum();
+                let gap = (total_span - total_h).max(0.0) / (indices.len() - 1) as f32;
+                let mut cur_y = first_y;
+                for idx in indices {
+                    let item = &mut self.free_items[idx];
+                    item.y_px = cur_y;
+                    cur_y += item.height_px + gap;
+                    Self::clamp_item_to_safe_margin(&paper, item);
+                }
             }
             return;
         }
-        let Some(id) = self.selected_id else {
+
+        if selected_unlocked.is_empty() {
             return;
+        }
+        self.push_freeform_undo();
+
+        // When >= 2 items are selected, align them against their group bounding box; otherwise paper safe area.
+        let (ref_l, ref_t, ref_w, ref_h) = if selected_unlocked.len() >= 2 {
+            let mut min_x = f32::INFINITY;
+            let mut min_y = f32::INFINITY;
+            let mut max_x = f32::NEG_INFINITY;
+            let mut max_y = f32::NEG_INFINITY;
+            for item in self
+                .free_items
+                .iter()
+                .filter(|i| selected_unlocked.contains(&i.id))
+            {
+                min_x = min_x.min(item.x_px);
+                min_y = min_y.min(item.y_px);
+                max_x = max_x.max(item.x_px + item.width_px);
+                max_y = max_y.max(item.y_px + item.height_px);
+            }
+            (min_x, min_y, (max_x - min_x).max(1.0), (max_y - min_y).max(1.0))
+        } else {
+            (ml, mt, pw, ph)
         };
-        if let Some(item) = self.free_items.iter_mut().find(|i| i.id == id) {
+
+        for item in &mut self.free_items {
+            if !selected_unlocked.contains(&item.id) {
+                continue;
+            }
             match align {
-                "left" => item.x_px = ml,
-                "center" => item.x_px = ml + (pw - item.width_px) * 0.5,
-                "right" => item.x_px = ml + pw - item.width_px,
-                "middle" => item.y_px = mt + (ph - item.height_px) * 0.5,
+                "left" => item.x_px = ref_l,
+                "center" => item.x_px = ref_l + (ref_w - item.width_px) * 0.5,
+                "right" => item.x_px = ref_l + ref_w - item.width_px,
+                "top" => item.y_px = ref_t,
+                "middle" => item.y_px = ref_t + (ref_h - item.height_px) * 0.5,
+                "bottom" => item.y_px = ref_t + ref_h - item.height_px,
                 _ => {}
             }
             Self::clamp_item_to_safe_margin(&paper, item);
@@ -1532,6 +1940,9 @@ mod tests {
             transform: ImageTransform::default(),
             corner_radius: 0.0,
             bg_color: None,
+            opacity: 1.0,
+            visible: true,
+            locked: false,
             custom_name: None,
         };
 
@@ -2063,5 +2474,67 @@ mod tests {
         let restored = st.find_item(photo_id).unwrap();
         // Natural ratio is 400:200 = 2:1 -> width/height should be ~2.0 again.
         assert!(((restored.width_px / restored.height_px) - 2.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn test_freeform_undo_redo_lock_visibility_nudge_and_align() {
+        let mut st = StudioState::new();
+        st.reset_images_and_switch_mode(LayoutMode::Freeform);
+
+        st.add_freeform_shape(FreeformShapeKind::Rectangle);
+        st.add_freeform_shape(FreeformShapeKind::Line);
+        st.add_freeform_shape(FreeformShapeKind::Circle);
+        assert_eq!(st.free_items.len(), 3);
+        assert!(st.can_undo_freeform());
+        assert!(!st.can_redo_freeform());
+
+        // Undo / Redo item creation
+        assert!(st.undo_freeform());
+        assert_eq!(st.free_items.len(), 2);
+        assert!(st.can_redo_freeform());
+        assert!(st.redo_freeform());
+        assert_eq!(st.free_items.len(), 3);
+
+        let id0 = st.free_items[0].id;
+        let id1 = st.free_items[1].id;
+        let id2 = st.free_items[2].id;
+
+        // Visibility hides item from printable snapshot
+        assert!(st.find_item(id0).unwrap().is_printable());
+        st.toggle_item_visible(id0);
+        assert!(!st.find_item(id0).unwrap().is_printable());
+        st.toggle_item_visible(id0);
+        assert!(st.find_item(id0).unwrap().is_printable());
+
+        // Lock prevents nudge and deletion
+        st.select_single(Some(id1));
+        let orig_x = st.find_item(id1).unwrap().x_px;
+        st.toggle_item_locked(id1);
+        assert!(!st.nudge_selected(50.0, 0.0));
+        assert!((st.find_item(id1).unwrap().x_px - orig_x).abs() < 1e-3);
+        st.delete_selected();
+        assert_eq!(st.free_items.len(), 3);
+        st.toggle_item_locked(id1);
+
+        // Nudge moves unlocked item
+        assert!(st.nudge_selected(40.0, 20.0));
+        assert!((st.find_item(id1).unwrap().x_px - (orig_x + 40.0)).abs() < 1e-2);
+
+        // Align top / bottom & distribute vertically
+        let (_, mt, _, ph) = st.paper.printable_bounds_px();
+        st.select_single(Some(id0));
+        st.align_selected("top");
+        assert!((st.find_item(id0).unwrap().y_px - mt).abs() < 1.0);
+
+        st.select_single(Some(id2));
+        st.align_selected("bottom");
+        let it2 = st.find_item(id2).unwrap();
+        assert!(((it2.y_px + it2.height_px) - (mt + ph)).abs() < 1.0);
+
+        st.select_all_freeform();
+        assert_eq!(st.selected_ids.len(), 3);
+        st.align_selected("distribute_v");
+        let mid_y = st.find_item(id1).unwrap().y_px;
+        assert!(mid_y > mt && mid_y < mt + ph);
     }
 }

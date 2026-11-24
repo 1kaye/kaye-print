@@ -185,6 +185,9 @@ app:
   shape_star:
     id: Bintang
     en: Star
+  shape_line:
+    id: Garis
+    en: Line
   selected_shape:
     id: Bentuk Terpilih
     en: Selected Shape
@@ -197,12 +200,42 @@ app:
   lock_aspect_ratio:
     id: Kunci Rasio Aspek
     en: Lock Aspect Ratio
+  opacity:
+    id: Transparansi
+    en: Opacity
   fill_color:
     id: Warna Isi
     en: Fill Color
+  stroke_enable:
+    id: Garis Tepi (Stroke)
+    en: Stroke Outline
+  stroke_color:
+    id: Warna Garis
+    en: Stroke Color
+  stroke_width:
+    id: Tebal Garis
+    en: Stroke Width
+  rotation:
+    id: Rotasi
+    en: Rotation
   layers_title:
     id: "Lapisan (Layer)"
     en: Layers
+  layer_hide_tooltip:
+    id: Sembunyikan Lapisan
+    en: Hide Layer
+  layer_show_tooltip:
+    id: Tampilkan Lapisan
+    en: Show Layer
+  undo_tooltip:
+    id: "Urungkan (Ctrl+Z)"
+    en: "Undo (Ctrl+Z)"
+  redo_tooltip:
+    id: "Ulangi (Ctrl+Shift+Z)"
+    en: "Redo (Ctrl+Shift+Z)"
+  snap_grid_tooltip:
+    id: "Kisi 5mm (Snap Grid)"
+    en: "5mm Snap Grid"
   save_name_tooltip:
     id: Simpan Nama
     en: Save Name
@@ -236,6 +269,24 @@ app:
   font_color:
     id: Warna Font
     en: Font Color
+  text_style:
+    id: Gaya Teks
+    en: Text Style
+  bold_tooltip:
+    id: Tebal (Bold)
+    en: Bold
+  italic_tooltip:
+    id: Miring (Italic)
+    en: Italic
+  underline_tooltip:
+    id: Garis Bawah (Underline)
+    en: Underline
+  line_height:
+    id: Jarak Baris
+    en: Line Height
+  text_bg_enable:
+    id: Latar Belakang Teks
+    en: Text Background
   text_align:
     id: Perataan Teks
     en: Text Alignment
@@ -254,12 +305,21 @@ app:
   align_right_tooltip:
     id: Rata Kanan
     en: Align Right
+  align_top_tooltip:
+    id: Rata Atas
+    en: Align Top
   align_middle_tooltip:
     id: Tengah Vertikal
     en: Center Vertically
+  align_bottom_tooltip:
+    id: Rata Bawah
+    en: Align Bottom
   align_dist_tooltip:
-    id: Distribusi Rata
-    en: Distribute Evenly
+    id: Distribusi Horizontal
+    en: Distribute Horizontally
+  align_dist_v_tooltip:
+    id: Distribusi Vertikal
+    en: Distribute Vertically
   fallback_photo:
     id: "Foto %{index}"
     en: "Photo %{index}"
@@ -298,6 +358,18 @@ app:
   ctx_reset_transform:
     id: Reset Transformasi
     en: Reset Transform
+  ctx_bring_to_front:
+    id: Bawa ke Paling Depan
+    en: Bring to Front
+  ctx_send_to_back:
+    id: Kirim ke Paling Belakang
+    en: Send to Back
+  ctx_lock_layer:
+    id: Kunci Lapisan
+    en: Lock Layer
+  ctx_unlock_layer:
+    id: Buka Kunci Lapisan
+    en: Unlock Layer
   ctx_duplicate:
     id: Duplikasi
     en: Duplicate

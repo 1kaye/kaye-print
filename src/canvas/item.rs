@@ -1,7 +1,8 @@
 use gpui_kit::{
-    AnyElement, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable as _, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ObjectFit,
-    ParentElement, PathBuilder, Pixels, Styled, StyledImage as _, Subscription, Window,
+    AnyElement, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable as _, FontWeight,
+    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    ObjectFit, ParentElement, PathBuilder, Pixels, Point, Styled, StyledImage as _, Subscription,
+    Window,
     assets::IconName,
     base::input::{InputEvent, Textarea as BaseTextarea, TextareaState},
     canvas,
@@ -19,15 +20,138 @@ use crate::{
     canvas::{
         canvas_view::CanvasView,
         context_menu::build_item_popup_menu,
-        geometry::TEXT_BOX_PAD_PX,
-        model::{CanvasDrag, CanvasItem, FreeformShapeKind, LayoutMode, ShapeKind, TextAlignMode},
+        geometry::{TEXT_BOX_PAD_PX, freeform_shape_polygon},
+        model::{
+            CanvasDrag, CanvasItem, FreeformShapeKind, LayoutMode, ResizeHandle, ShapeBoxData,
+            ShapeKind, TextAlignMode,
+        },
     },
     shared::i18n::Language,
 };
 
-fn paint_freeform_polygon(
+const KAPPA: f32 = 0.552_284_8;
+
+#[inline]
+fn rot_pt(
+    ox: f32,
+    oy: f32,
+    cx: f32,
+    cy: f32,
+    x: f32,
+    y: f32,
+    cos_r: f32,
+    sin_r: f32,
+) -> Point<Pixels> {
+    let dx = x - cx;
+    let dy = y - cy;
+    point(
+        px(ox + cx + dx * cos_r - dy * sin_r),
+        px(oy + cy + dx * sin_r + dy * cos_r),
+    )
+}
+
+fn append_shape_geometry(
+    builder: &mut PathBuilder,
     kind: FreeformShapeKind,
-    fill_color: Hsla,
+    ox: f32,
+    oy: f32,
+    w: f32,
+    h: f32,
+    inset: f32,
+    corner_radius: f32,
+    cos_r: f32,
+    sin_r: f32,
+) {
+    let cx = w * 0.5;
+    let cy = h * 0.5;
+    let pt = |x: f32, y: f32| rot_pt(ox, oy, cx, cy, x, y, cos_r, sin_r);
+
+    match kind {
+        FreeformShapeKind::Line => {
+            builder.move_to(pt(0.0, cy));
+            builder.line_to(pt(w, cy));
+        }
+        FreeformShapeKind::Rectangle => {
+            let x0 = inset.min(cx);
+            let y0 = inset.min(cy);
+            let x1 = (w - inset).max(cx);
+            let y1 = (h - inset).max(cy);
+            let rw = (x1 - x0).max(0.5);
+            let rh = (y1 - y0).max(0.5);
+            let r = (corner_radius - inset).clamp(0.0, rw.min(rh) * 0.5);
+            if r <= 0.5 {
+                builder.move_to(pt(x0, y0));
+                builder.line_to(pt(x1, y0));
+                builder.line_to(pt(x1, y1));
+                builder.line_to(pt(x0, y1));
+                builder.close();
+            } else {
+                let k = r * KAPPA;
+                builder.move_to(pt(x0 + r, y0));
+                builder.line_to(pt(x1 - r, y0));
+                builder.cubic_bezier_to(pt(x1, y0 + r), pt(x1 - r + k, y0), pt(x1, y0 + r - k));
+                builder.line_to(pt(x1, y1 - r));
+                builder.cubic_bezier_to(pt(x1 - r, y1), pt(x1, y1 - r + k), pt(x1 - r + k, y1));
+                builder.line_to(pt(x0 + r, y1));
+                builder.cubic_bezier_to(pt(x0, y1 - r), pt(x0 + r - k, y1), pt(x0, y1 - r + k));
+                builder.line_to(pt(x0, y0 + r));
+                builder.cubic_bezier_to(pt(x0 + r, y0), pt(x0, y0 + r - k), pt(x0 + r - k, y0));
+                builder.close();
+            }
+        }
+        FreeformShapeKind::Circle => {
+            let rx = (cx - inset).max(0.5);
+            let ry = (cy - inset).max(0.5);
+            let kx = rx * KAPPA;
+            let ky = ry * KAPPA;
+            builder.move_to(pt(cx, cy - ry));
+            builder.cubic_bezier_to(
+                pt(cx + rx, cy),
+                pt(cx + kx, cy - ry),
+                pt(cx + rx, cy - ky),
+            );
+            builder.cubic_bezier_to(
+                pt(cx, cy + ry),
+                pt(cx + rx, cy + ky),
+                pt(cx + kx, cy + ry),
+            );
+            builder.cubic_bezier_to(
+                pt(cx - rx, cy),
+                pt(cx - kx, cy + ry),
+                pt(cx - rx, cy + ky),
+            );
+            builder.cubic_bezier_to(
+                pt(cx, cy - ry),
+                pt(cx - rx, cy - ky),
+                pt(cx - kx, cy - ry),
+            );
+            builder.close();
+        }
+        FreeformShapeKind::Triangle | FreeformShapeKind::Diamond | FreeformShapeKind::Star => {
+            let verts = freeform_shape_polygon(kind, w, h);
+            let sx = if w > 1.0 { ((w - inset * 2.0) / w).clamp(0.1, 1.0) } else { 1.0 };
+            let sy = if h > 1.0 { ((h - inset * 2.0) / h).clamp(0.1, 1.0) } else { 1.0 };
+            for (i, (vx, vy)) in verts.into_iter().enumerate() {
+                let px_v = cx + (vx - cx) * sx;
+                let py_v = cy + (vy - cy) * sy;
+                let p = pt(px_v, py_v);
+                if i == 0 {
+                    builder.move_to(p);
+                } else {
+                    builder.line_to(p);
+                }
+            }
+            builder.close();
+        }
+    }
+}
+
+fn paint_freeform_shape(
+    sb: &ShapeBoxData,
+    corner_radius_disp: f32,
+    stroke_width_disp: f32,
+    rotation_deg: f32,
+    opacity: f32,
     bounds: Bounds<Pixels>,
     window: &mut Window,
 ) {
@@ -35,48 +159,89 @@ fn paint_freeform_polygon(
     let h = f32::from(bounds.size.height);
     let ox = f32::from(bounds.origin.x);
     let oy = f32::from(bounds.origin.y);
-    let mut builder = PathBuilder::fill();
-    match kind {
-        FreeformShapeKind::Triangle => {
-            builder.move_to(point(px(ox + w * 0.5), px(oy)));
-            builder.line_to(point(px(ox + w), px(oy + h)));
-            builder.line_to(point(px(ox), px(oy + h)));
-            builder.close();
-        }
-        FreeformShapeKind::Diamond => {
-            builder.move_to(point(px(ox + w * 0.5), px(oy)));
-            builder.line_to(point(px(ox + w), px(oy + h * 0.5)));
-            builder.line_to(point(px(ox + w * 0.5), px(oy + h)));
-            builder.line_to(point(px(ox), px(oy + h * 0.5)));
-            builder.close();
-        }
-        FreeformShapeKind::Star => {
-            let cx = ox + w * 0.5;
-            let cy = oy + h * 0.5;
-            let rx_out = w * 0.5;
-            let ry_out = h * 0.5;
-            let rx_in = rx_out * 0.382;
-            let ry_in = ry_out * 0.382;
-            for i in 0..10 {
-                let angle = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::PI / 5.0;
-                let (rx, ry) = if i % 2 == 0 {
-                    (rx_out, ry_out)
-                } else {
-                    (rx_in, ry_in)
-                };
-                let pt = point(px(cx + rx * angle.cos()), px(cy + ry * angle.sin()));
-                if i == 0 {
-                    builder.move_to(pt);
-                } else {
-                    builder.line_to(pt);
-                }
-            }
-            builder.close();
-        }
-        FreeformShapeKind::Rectangle | FreeformShapeKind::Circle => return,
+    if w <= 0.5 || h <= 0.5 || opacity <= 0.001 {
+        return;
     }
+
+    let rad = rotation_deg.to_radians();
+    let cos_r = rad.cos();
+    let sin_r = rad.sin();
+    let apply_op = |c: Hsla| Hsla {
+        a: (c.a * opacity).clamp(0.0, 1.0),
+        ..c
+    };
+
+    if sb.kind == FreeformShapeKind::Line {
+        let col = sb.stroke_color.unwrap_or(sb.fill_color);
+        let sw = stroke_width_disp.max(1.5);
+        let mut builder = PathBuilder::stroke(px(sw));
+        append_shape_geometry(&mut builder, sb.kind, ox, oy, w, h, 0.0, 0.0, cos_r, sin_r);
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, apply_op(col));
+        }
+        return;
+    }
+
+    if sb.fill_color.a > 0.0 {
+        let mut fill_builder = PathBuilder::fill();
+        append_shape_geometry(
+            &mut fill_builder,
+            sb.kind,
+            ox,
+            oy,
+            w,
+            h,
+            0.0,
+            corner_radius_disp,
+            cos_r,
+            sin_r,
+        );
+        if let Ok(path) = fill_builder.build() {
+            window.paint_path(path, apply_op(sb.fill_color));
+        }
+    }
+
+    if let Some(stroke_col) = sb.stroke_color
+        && stroke_col.a > 0.0
+        && stroke_width_disp > 0.1
+    {
+        let sw = stroke_width_disp.max(1.0);
+        let mut stroke_builder = PathBuilder::stroke(px(sw));
+        append_shape_geometry(
+            &mut stroke_builder,
+            sb.kind,
+            ox,
+            oy,
+            w,
+            h,
+            sw * 0.5,
+            corner_radius_disp,
+            cos_r,
+            sin_r,
+        );
+        if let Ok(path) = stroke_builder.build() {
+            window.paint_path(path, apply_op(stroke_col));
+        }
+    }
+}
+
+fn paint_dashed_selection_box(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+    let ox = f32::from(bounds.origin.x);
+    let oy = f32::from(bounds.origin.y);
+    let bw = f32::from(bounds.size.width);
+    let bh = f32::from(bounds.size.height);
+    if bw <= 2.0 || bh <= 2.0 {
+        return;
+    }
+    let inset = 1.0;
+    let mut builder = PathBuilder::stroke(px(1.5)).dash_array(&[px(5.0), px(3.0)]);
+    builder.move_to(point(px(ox + inset), px(oy + inset)));
+    builder.line_to(point(px(ox + bw - inset), px(oy + inset)));
+    builder.line_to(point(px(ox + bw - inset), px(oy + bh - inset)));
+    builder.line_to(point(px(ox + inset), px(oy + bh - inset)));
+    builder.close();
     if let Ok(path) = builder.build() {
-        window.paint_path(path, fill_color);
+        window.paint_path(path, color);
     }
 }
 
@@ -85,11 +250,13 @@ struct InlineTextState {
     _sub: Subscription,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_canvas_item(
     item: &CanvasItem,
     display_scale: f32,
     paper_dpi: u32,
     selected_id: Option<u64>,
+    selected_ids: &[u64],
     editing_text_id: Option<u64>,
     focus_inline: bool,
     mode: LayoutMode,
@@ -101,64 +268,63 @@ pub(crate) fn render_canvas_item(
     cx: &mut Context<CanvasView>,
 ) -> AnyElement {
     let id = item.id;
-    let is_selected = selected_id == Some(id);
+    let is_primary_selected = selected_id == Some(id);
+    let is_selected = is_primary_selected || selected_ids.contains(&id);
+    let is_locked = item.locked;
     let orig_x = item.x_px;
     let orig_y = item.y_px;
     let orig_w = item.width_px;
     let orig_h = item.height_px;
 
-    let x = orig_x * display_scale;
-    let y = orig_y * display_scale;
+    // Pixel snapping prevents subpixel right/bottom drift between shape fill and selection outline.
+    let x = (orig_x * display_scale).round();
+    let y = (orig_y * display_scale).round();
     let is_freeform = mode == LayoutMode::Freeform;
     let is_text = is_freeform && item.is_text();
     let is_shape = is_freeform && item.is_shape();
-    let is_editing_inline = is_text && editing_text_id == Some(id);
+    let is_editing_inline = is_text && !is_locked && editing_text_id == Some(id);
     let has_image = item.image.is_some();
     let min_disp = if is_freeform && (has_image || is_text || is_shape) {
         4.0
     } else {
         18.0
     };
-    let w = (orig_w * display_scale).max(min_disp);
-    let h = (orig_h * display_scale).max(min_disp);
-    let can_move =
-        !is_editing_inline && (is_freeform || (mode == LayoutMode::IdPhoto && id_photo_free_move));
+    let w = (orig_w * display_scale).round().max(min_disp);
+    let h = (orig_h * display_scale).round().max(min_disp);
+    let can_move = !is_editing_inline
+        && !is_locked
+        && (is_freeform || (mode == LayoutMode::IdPhoto && id_photo_free_move));
     let is_oval = !is_freeform && item.shape_kind == ShapeKind::CircleOval;
     let cut_thickness = if item.cut_line && !is_freeform {
         (item.cut_line_width * display_scale).clamp(1.0, 16.0)
     } else {
         0.0
     };
+    let item_opacity = item.opacity.clamp(0.05, 1.0);
 
     let inner_frame = if is_freeform {
         // Freeform mode: render photo naturally, text box, or vector shape
         if let Some(sb) = &item.shape {
-            let kind = sb.kind;
-            let fill_color = sb.fill_color;
-            match kind {
-                FreeformShapeKind::Rectangle => div()
-                    .size_full()
-                    .bg(fill_color)
-                    .when(item.corner_radius > 0.0, |d| {
-                        d.rounded(px(item.corner_radius * display_scale))
-                    })
-                    .into_any_element(),
-                FreeformShapeKind::Circle => div()
-                    .size_full()
-                    .bg(fill_color)
-                    .rounded(px(w.max(h)))
-                    .into_any_element(),
-                FreeformShapeKind::Triangle
-                | FreeformShapeKind::Diamond
-                | FreeformShapeKind::Star => canvas(
-                    |_, _, _| {},
-                    move |bounds, (), window, _| {
-                        paint_freeform_polygon(kind, fill_color, bounds, window);
-                    },
-                )
-                .size_full()
-                .into_any_element(),
-            }
+            let sb_owned = sb.clone();
+            let corner_disp = item.corner_radius * display_scale;
+            let stroke_disp = sb.stroke_width * display_scale;
+            let rot_deg = item.rotation_deg;
+            canvas(
+                |_, _, _| {},
+                move |bounds, (), window, _| {
+                    paint_freeform_shape(
+                        &sb_owned,
+                        corner_disp,
+                        stroke_disp,
+                        rot_deg,
+                        item_opacity,
+                        bounds,
+                        window,
+                    );
+                },
+            )
+            .size_full()
+            .into_any_element()
         } else if let Some(tb) = &item.text {
             let font_px = (tb.font_size_pt.clamp(6.0, 300.0) * (paper_dpi.max(72) as f32 / 72.0)
                 * display_scale)
@@ -166,6 +332,7 @@ pub(crate) fn render_canvas_item(
             let pad_px = (TEXT_BOX_PAD_PX * display_scale).max(2.0);
             let is_empty = tb.content.trim().is_empty();
             let font_family = tb.font_family.clone();
+            let lh = tb.line_height.clamp(0.9, 2.5);
 
             if is_editing_inline {
                 let app_for_edit = app_entity.clone();
@@ -226,9 +393,12 @@ pub(crate) fn render_canvas_item(
                     .cursor_text()
                     .when(!font_family.is_empty(), |d| d.font_family(font_family))
                     .text_size(px(font_px))
-                    .line_height(relative(1.25))
+                    .line_height(relative(lh))
+                    .when(tb.bold, |d| d.font_weight(FontWeight::BOLD))
+                    .when(tb.italic, |d| d.italic())
+                    .when(tb.underline, |d| d.underline())
                     .text_color(tb.color)
-                    .bg(rgb(0xFFFFFF).opacity(0.6))
+                    .bg(item.bg_color.unwrap_or_else(|| rgb(0xFFFFFF).opacity(0.6).into()))
                     .border_1()
                     .border_color(primary_border.opacity(0.6))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -250,9 +420,14 @@ pub(crate) fn render_canvas_item(
                     .size_full()
                     .overflow_hidden()
                     .p(px(pad_px))
+                    .opacity(item_opacity)
+                    .when_some(item.bg_color, |d, bg| d.bg(bg))
                     .when(!font_family.is_empty(), |d| d.font_family(font_family))
                     .text_size(px(font_px))
-                    .line_height(relative(1.25))
+                    .line_height(relative(lh))
+                    .when(tb.bold, |d| d.font_weight(FontWeight::BOLD))
+                    .when(tb.italic, |d| d.italic())
+                    .when(tb.underline, |d| d.underline())
                     .map(|d| match tb.align {
                         TextAlignMode::Left | TextAlignMode::Justified => d.text_left(),
                         TextAlignMode::Center => d.text_center(),
@@ -279,6 +454,7 @@ pub(crate) fn render_canvas_item(
             div()
                 .size_full()
                 .overflow_hidden()
+                .opacity(item_opacity)
                 .when(item.corner_radius > 0.0, |d| {
                     d.rounded(px(item.corner_radius * display_scale))
                 })
@@ -403,20 +579,35 @@ pub(crate) fn render_canvas_item(
                     }
                     focus.focus(window, cx);
 
-                    let was_selected = app.read(cx).state.selected_id == Some(id);
+                    let was_selected = app.read(cx).state.is_item_selected(id);
+                    let shift = ev.modifiers.shift;
                     app.update(cx, |app, cx| {
                         app.state.editing_text_id = None;
-                        if app.state.selected_id != Some(id) {
+                        if is_freeform && shift {
+                            app.state.toggle_select_item(id);
+                            cx.notify();
+                        } else if !was_selected {
+                            app.state.select_single(Some(id));
+                            cx.notify();
+                        } else if app.state.selected_id != Some(id) {
                             app.state.selected_id = Some(id);
                             cx.notify();
                         }
                     });
 
-                    if ev.click_count >= 2 {
+                    if shift && is_freeform {
+                        this.pending_text_click = None;
+                        this.drag_state = CanvasDrag::None;
+                        cx.notify();
+                        return;
+                    }
+
+                    if ev.click_count >= 2 && !is_locked {
                         if is_text {
                             this.pending_text_click = None;
                             this.drag_state = CanvasDrag::None;
                             app.update(cx, |app, cx| {
+                                app.state.push_freeform_undo();
                                 app.state.editing_text_id = Some(id);
                                 cx.notify();
                             });
@@ -430,19 +621,35 @@ pub(crate) fn render_canvas_item(
                         return;
                     }
 
-                    this.pending_text_click = if was_selected && is_text {
+                    this.pending_text_click = if was_selected && is_text && !is_locked {
                         Some((id, ev.position.x.as_f32(), ev.position.y.as_f32()))
                     } else {
                         None
                     };
 
                     if can_move {
-                        this.drag_state = CanvasDrag::MoveItem {
-                            id,
+                        let orig_positions = if is_freeform {
+                            let st = &app.read(cx).state;
+                            let sel_ids = st.selected_freeform_ids();
+                            let mut positions: Vec<(u64, f32, f32)> = st
+                                .free_items
+                                .iter()
+                                .filter(|it| sel_ids.contains(&it.id) && !it.locked && it.visible)
+                                .map(|it| (it.id, it.x_px, it.y_px))
+                                .collect();
+                            if !positions.iter().any(|(pid, _, _)| *pid == id) {
+                                positions.push((id, orig_x, orig_y));
+                            }
+                            positions
+                        } else {
+                            vec![(id, orig_x, orig_y)]
+                        };
+                        this.drag_undo_pushed = false;
+                        this.drag_state = CanvasDrag::MoveItems {
+                            anchor_id: id,
                             start_mx: ev.position.x.as_f32(),
                             start_my: ev.position.y.as_f32(),
-                            orig_x,
-                            orig_y,
+                            orig_positions,
                         };
                     }
                     cx.notify();
@@ -451,7 +658,11 @@ pub(crate) fn render_canvas_item(
         )
         .context_menu(move |menu, _window, cx| {
             app_for_select.update(cx, |app: &mut StudioApp, cx| {
-                app.state.selected_id = Some(id);
+                if !app.state.is_item_selected(id) {
+                    app.state.select_single(Some(id));
+                } else {
+                    app.state.selected_id = Some(id);
+                }
                 cx.notify();
             });
             build_item_popup_menu(
@@ -461,6 +672,7 @@ pub(crate) fn render_canvas_item(
                 is_text || is_shape,
                 has_image,
                 has_edit,
+                is_locked,
                 lang,
                 app_for_menu.clone(),
             )
@@ -480,62 +692,193 @@ pub(crate) fn render_canvas_item(
             )
         });
 
-    // Outline / Selection ring (dashed outline without shifting bounds)
+    // Outline / Selection ring (locked to outer's resolved edges via inset(-2px))
     if is_selected {
-        outer = outer.child(
-            div()
+        let ring_color = if is_locked {
+            cx.theme().muted_foreground
+        } else {
+            cx.theme().primary
+        };
+        let use_vector_ring = !is_oval && item.corner_radius <= 0.0;
+        if use_vector_ring {
+            outer = outer.child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, (), window, _| {
+                        paint_dashed_selection_box(bounds, ring_color, window);
+                    },
+                )
                 .absolute()
-                .left(px(-2.0))
-                .top(px(-2.0))
-                .w(px(w + 4.0))
-                .h(px(h + 4.0))
-                .border_2()
-                .border_dashed()
-                .border_color(cx.theme().primary)
-                .when(is_oval, |d| d.rounded(px((w + 4.0).max(h + 4.0))))
-                .when(!is_oval && item.corner_radius > 0.0, |d| {
-                    d.rounded(px(item.corner_radius * display_scale + 2.0))
-                }),
-        );
-
-        if is_freeform {
-            // Resize handle on bottom-right corner for Freeform mode
-            let handle_sz = 14.0f32;
+                .inset(px(-2.0)),
+            );
+        } else {
             outer = outer.child(
                 div()
-                    .id(("resize-handle", id))
                     .absolute()
-                    .right(px(-handle_sz * 0.5))
-                    .bottom(px(-handle_sz * 0.5))
-                    .w(px(handle_sz))
-                    .h(px(handle_sz))
-                    .rounded_full()
-                    .bg(cx.theme().primary)
+                    .inset(px(-2.0))
                     .border_2()
-                    .border_color(rgb(0xFFFFFF))
-                    .cursor_nwse_resize()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.drag_state = CanvasDrag::ResizeItem {
-                                id,
-                                start_mx: ev.position.x.as_f32(),
-                                start_my: ev.position.y.as_f32(),
-                                orig_w,
-                                orig_h,
-                            };
-                            cx.notify();
-                        }),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.drag_state = CanvasDrag::None;
-                            cx.notify();
-                        }),
-                    ),
+                    .border_dashed()
+                    .border_color(ring_color)
+                    .when(is_oval, |d| d.rounded(px((w + 4.0).max(h + 4.0))))
+                    .when(!is_oval && item.corner_radius > 0.0, |d| {
+                        d.rounded(px(item.corner_radius * display_scale + 2.0))
+                    }),
             );
+        }
+
+        if is_primary_selected && is_freeform && !is_locked && !is_editing_inline {
+            let corner_sz = 10.0f32;
+            let corner_off = -corner_sz * 0.5;
+            let primary = cx.theme().primary;
+            let mut handles: Vec<AnyElement> = Vec::with_capacity(8);
+
+            let mut push_handle = |handle: ResizeHandle,
+                                   handle_div: gpui_kit::Stateful<gpui_kit::Div>| {
+                handles.push(
+                    handle_div
+                        .bg(primary)
+                        .border_2()
+                        .border_color(rgb(0xFFFFFF))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.drag_undo_pushed = false;
+                                this.drag_state = CanvasDrag::ResizeItem {
+                                    id,
+                                    handle,
+                                    start_mx: ev.position.x.as_f32(),
+                                    start_my: ev.position.y.as_f32(),
+                                    orig_x,
+                                    orig_y,
+                                    orig_w,
+                                    orig_h,
+                                };
+                                cx.notify();
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.drag_state = CanvasDrag::None;
+                                this.active_guides.clear();
+                                cx.notify();
+                            }),
+                        )
+                        .into_any_element(),
+                );
+            };
+
+            // 4 corner handles
+            push_handle(
+                ResizeHandle::TopLeft,
+                div()
+                    .id(("resize-tl", id))
+                    .absolute()
+                    .left(px(corner_off))
+                    .top(px(corner_off))
+                    .w(px(corner_sz))
+                    .h(px(corner_sz))
+                    .rounded_full()
+                    .cursor_nwse_resize(),
+            );
+            push_handle(
+                ResizeHandle::TopRight,
+                div()
+                    .id(("resize-tr", id))
+                    .absolute()
+                    .right(px(corner_off))
+                    .top(px(corner_off))
+                    .w(px(corner_sz))
+                    .h(px(corner_sz))
+                    .rounded_full()
+                    .cursor_nesw_resize(),
+            );
+            push_handle(
+                ResizeHandle::BottomLeft,
+                div()
+                    .id(("resize-bl", id))
+                    .absolute()
+                    .left(px(corner_off))
+                    .bottom(px(corner_off))
+                    .w(px(corner_sz))
+                    .h(px(corner_sz))
+                    .rounded_full()
+                    .cursor_nesw_resize(),
+            );
+            push_handle(
+                ResizeHandle::BottomRight,
+                div()
+                    .id(("resize-br", id))
+                    .absolute()
+                    .right(px(corner_off))
+                    .bottom(px(corner_off))
+                    .w(px(corner_sz))
+                    .h(px(corner_sz))
+                    .rounded_full()
+                    .cursor_nwse_resize(),
+            );
+
+            // 4 side pill handles when box is wide/tall enough to stay uncluttered
+            if w >= 36.0 {
+                let pill_w = 14.0f32;
+                let pill_h = 6.0f32;
+                let mid_x = (w - pill_w) * 0.5;
+                push_handle(
+                    ResizeHandle::Top,
+                    div()
+                        .id(("resize-t", id))
+                        .absolute()
+                        .left(px(mid_x))
+                        .top(px(-pill_h * 0.5))
+                        .w(px(pill_w))
+                        .h(px(pill_h))
+                        .rounded_full()
+                        .cursor_ns_resize(),
+                );
+                push_handle(
+                    ResizeHandle::Bottom,
+                    div()
+                        .id(("resize-b", id))
+                        .absolute()
+                        .left(px(mid_x))
+                        .bottom(px(-pill_h * 0.5))
+                        .w(px(pill_w))
+                        .h(px(pill_h))
+                        .rounded_full()
+                        .cursor_ns_resize(),
+                );
+            }
+            if h >= 36.0 {
+                let pill_w = 6.0f32;
+                let pill_h = 14.0f32;
+                let mid_y = (h - pill_h) * 0.5;
+                push_handle(
+                    ResizeHandle::Left,
+                    div()
+                        .id(("resize-l", id))
+                        .absolute()
+                        .left(px(-pill_w * 0.5))
+                        .top(px(mid_y))
+                        .w(px(pill_w))
+                        .h(px(pill_h))
+                        .rounded_full()
+                        .cursor_ew_resize(),
+                );
+                push_handle(
+                    ResizeHandle::Right,
+                    div()
+                        .id(("resize-r", id))
+                        .absolute()
+                        .right(px(-pill_w * 0.5))
+                        .top(px(mid_y))
+                        .w(px(pill_w))
+                        .h(px(pill_h))
+                        .rounded_full()
+                        .cursor_ew_resize(),
+                );
+            }
+            outer = outer.children(handles);
         }
     }
 

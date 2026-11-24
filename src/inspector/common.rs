@@ -20,15 +20,17 @@ use gpui_kit::{
 use crate::app::StudioApp;
 
 pub trait ButtonSelectedExt {
-    fn primary_selected(self, is_selected: bool, cx: &App) -> Self;
+    fn neutral_selected(self, is_selected: bool, cx: &App) -> Self;
 }
 
 impl ButtonSelectedExt for Button {
-    fn primary_selected(self, is_selected: bool, cx: &App) -> Self {
+    fn neutral_selected(self, is_selected: bool, cx: &App) -> Self {
         self.selected(is_selected).when(is_selected, |b| {
-            b.bg(cx.theme().primary)
-                .text_color(cx.theme().primary_foreground)
-                .border_color(cx.theme().border)
+            let fg = cx.theme().foreground;
+            let fill_alpha = if cx.theme().is_dark() { 0.18 } else { 0.13 };
+            b.bg(fg.opacity(fill_alpha))
+                .text_color(fg)
+                .border_color(fg.opacity(0.30))
         })
     }
 }
@@ -216,6 +218,63 @@ pub(crate) fn render_rounded_slider(
     if (current_slider_val - current_radius).abs() > 0.5 {
         slider_entity.update(cx, |state, cx| {
             state.set_value(SliderValue::Single(current_radius), window, cx);
+        });
+    }
+
+    Slider::new(&slider_entity).w_full()
+}
+
+pub(crate) fn render_opacity_slider(
+    item_id: u64,
+    current_opacity: f32,
+    app: &Entity<StudioApp>,
+    window: &mut Window,
+    cx: &mut Context<super::InspectorView>,
+) -> impl IntoElement {
+    let app_for_sub = app.clone();
+    let cur_pct = (current_opacity.clamp(0.05, 1.0) * 100.0).round();
+    let slider_key = ("item-opacity-slider", item_id);
+
+    let slider_state = window.use_keyed_state(slider_key, cx, |window, cx| {
+        let slider = cx.new(|_| {
+            SliderState::new()
+                .min(5.0)
+                .max(100.0)
+                .step(1.0)
+                .default_value(SliderValue::Single(cur_pct))
+        });
+
+        let sub = cx.subscribe_in(
+            &slider,
+            window,
+            move |_this: &mut RoundedSliderState,
+                  _slider,
+                  event: &SliderEvent,
+                  _window,
+                  cx| {
+                if let SliderEvent::Change(SliderValue::Single(val)) = event {
+                    let op = (*val / 100.0).clamp(0.05, 1.0);
+                    app_for_sub.update(cx, |app, cx| {
+                        if let Some(item) = app.state.find_item_mut(item_id) {
+                            item.opacity = op;
+                            cx.notify();
+                        }
+                    });
+                }
+            },
+        );
+
+        RoundedSliderState { slider, _sub: sub }
+    });
+
+    let slider_entity = slider_state.read(cx).slider.clone();
+    let current_slider_val = match slider_entity.read(cx).value() {
+        SliderValue::Single(v) => v,
+        _ => 100.0,
+    };
+    if (current_slider_val - cur_pct).abs() > 0.5 {
+        slider_entity.update(cx, |state, cx| {
+            state.set_value(SliderValue::Single(cur_pct), window, cx);
         });
     }
 
